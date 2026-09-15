@@ -6,5 +6,6 @@ __pycache__/
 *.zip
 *.log
 config.toml
+panel de sonidos/
 .DS_Store
 Thumbs.db
