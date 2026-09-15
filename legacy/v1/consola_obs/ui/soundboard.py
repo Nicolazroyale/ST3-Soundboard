@@ -2,10 +2,12 @@ import os
 import tkinter as tk
 
 from tkinter import filedialog, messagebox, simpledialog
+from tkinter import font as tkfont
 
 from consola_obs.compat import HAY_PILLOW, Image, ImageDraw, ImageOps, ImageTk
 from consola_obs import estado as E
 from consola_obs import constantes as C
+from consola_obs import rutas as R
 from consola_obs import configuracion as mod_configuracion
 from consola_obs import utilidades as mod_utilidades
 from consola_obs.audio import reproduccion as mod_audio_reproduccion
@@ -708,6 +710,21 @@ def construir_soundboard():
         boton_reiniciar.pack(side="left", padx=4)
 
     # ------------------------------------------------------------------
+    # BOTÓN "DETECTAR SONIDOS": crea un pad por cada audio nuevo de la
+    # carpeta Sondidos_pad (con su imagen gemela si existe).
+    # ------------------------------------------------------------------
+    marco_detectar = tk.Frame(E.panel_soundboard, bg=C.COLOR_PANEL_SOUNDBOARD)
+    marco_detectar.pack(fill="x")
+    boton_detectar = tk.Button(
+        marco_detectar, text="🔍 DETECTAR SONIDOS DE LA CARPETA",
+        bg="#242d3d", fg="#4fe3ae", activebackground="#2e3a4f",
+        activeforeground="#4fe3ae", relief="flat", bd=0, pady=6,
+        font=(E.FUENTE_UI, 9, "bold"), cursor="hand2",
+        command=lambda: detectar_sonidos_carpeta(avisar=True),
+    )
+    boton_detectar.pack(fill="x", padx=6, pady=(4, 2))
+
+    # ------------------------------------------------------------------
     # BOTÓN "AGREGAR PAD": misma placa de vidrio, en formato barra ancha
     # ------------------------------------------------------------------
     alto_barra_agregar = max(62, round(76 * mod_utilidades.factor_escala_ui()))
@@ -749,13 +766,30 @@ def construir_soundboard():
         else:
             mod_ui_dibujo._dibujar_boton_vidrio(canvas_mas, 1, 1, ancho_mas - 1, alto_mas - 1, "#2a3243", grosor=3)
 
+        # El "+" y el texto crecen con la barra (en vez de un tamaño
+        # fijo chico): se miden y se centran como un solo conjunto.
+        tam_mas = max(22, round(alto_mas * 0.50))
+        tam_agregar = max(11, round(alto_mas * 0.30))
+        texto_agregar = "AGREGAR PAD"
+        fuente_mas = tkfont.Font(family=E.FUENTE_UI, size=tam_mas, weight="bold")
+        fuente_agregar = tkfont.Font(family=E.FUENTE_UI, size=tam_agregar, weight="bold")
+        while (fuente_mas.measure("+") + 18 + fuente_agregar.measure(texto_agregar)
+               > max(120, ancho_mas - 40)) and tam_agregar > 10:
+            tam_mas = max(18, tam_mas - 2)
+            tam_agregar -= 1
+            fuente_mas = tkfont.Font(family=E.FUENTE_UI, size=tam_mas, weight="bold")
+            fuente_agregar = tkfont.Font(family=E.FUENTE_UI, size=tam_agregar, weight="bold")
+        ancho_mas_txt = fuente_mas.measure("+")
+        ancho_agregar_txt = fuente_agregar.measure(texto_agregar)
+        x_mas = ancho_mas / 2 - (ancho_mas_txt + 18 + ancho_agregar_txt) / 2 + ancho_mas_txt / 2
+        x_agregar = x_mas + ancho_mas_txt / 2 + 18 + ancho_agregar_txt / 2
         canvas_mas.create_text(
-            ancho_mas / 2 - 72, alto_mas / 2, text="+", fill="#4fe3ae",
-            font=(E.FUENTE_UI, medida["fuente_pad_icono"] + 10, "bold")
+            x_mas, alto_mas / 2, text="+", fill="#4fe3ae",
+            font=(E.FUENTE_UI, tam_mas, "bold")
         )
         canvas_mas.create_text(
-            ancho_mas / 2 + 16, alto_mas / 2, text="AGREGAR PAD", fill="#c3cee5",
-            font=(E.FUENTE_UI, medida["fuente_pad_texto"] + 1, "bold")
+            x_agregar, alto_mas / 2, text=texto_agregar, fill="#c3cee5",
+            font=(E.FUENTE_UI, tam_agregar, "bold")
         )
 
     def _hover_mas(_e, encendido):
@@ -775,3 +809,111 @@ def agregar_pad_soundboard():
     E.num_pads_soundboard += 1
     mod_configuracion.guardar_config_interfaz({"num_pads_soundboard": E.num_pads_soundboard})
     construir_soundboard()
+
+
+EXTENSIONES_AUDIO = (".mp3", ".wav", ".ogg", ".flac", ".m4a")
+EXTENSIONES_IMAGEN = (".png", ".jpg", ".jpeg", ".gif", ".bmp")
+
+
+def _normalizar_ruta(ruta):
+    try:
+        return os.path.normcase(os.path.normpath(os.path.abspath(ruta)))
+    except Exception:
+        return ruta
+
+
+def _imagen_gemela(nombre_base):
+    """Busca en la carpeta de imágenes un archivo con el mismo nombre
+    base que el sonido (aplausos-1.mp3 -> aplausos-1.jpg). Devuelve la
+    ruta o None si no hay ninguna."""
+    try:
+        for extension in EXTENSIONES_IMAGEN:
+            candidata = os.path.join(R.CARPETA_IMAGENES_PAD, nombre_base + extension)
+            if os.path.isfile(candidata):
+                return candidata
+    except Exception:
+        pass
+    return None
+
+
+def _pad_ocupado(indice):
+    """Un pad cuenta como ocupado si tiene un archivo de sonido asignado
+    (los vacíos, los quitados o los que sólo tienen color no cuentan)."""
+    datos = E.config_soundboard.get(str(indice))
+    return bool(isinstance(datos, dict) and datos.get("archivo"))
+
+
+def _insertar_pad_al_principio(datos_nuevos):
+    """Mete el pad nuevo en la posición 0 corriendo los existentes una
+    posición a la derecha, hasta el primer hueco vacío. Si no hay ningún
+    hueco (todos ocupados), primero se agrega un pad nuevo al final y
+    recién ahí se corre. Nunca se pierde ningún pad existente."""
+    hueco = None
+    for i in range(E.num_pads_soundboard):
+        if not _pad_ocupado(i):
+            hueco = i
+            break
+    if hueco is None:
+        hueco = E.num_pads_soundboard
+        E.num_pads_soundboard += 1
+    for i in range(hueco, 0, -1):
+        anterior = E.config_soundboard.pop(str(i - 1), None)
+        if anterior is None:
+            E.config_soundboard.pop(str(i), None)
+        else:
+            E.config_soundboard[str(i)] = anterior
+    E.config_soundboard["0"] = datos_nuevos
+
+
+def detectar_sonidos_carpeta(avisar=True):
+    """Crea un pad por cada archivo de audio de la carpeta Sondidos_pad
+    que todavía no tenga pad asignado, con el nombre del archivo y, si
+    existe, su imagen gemela de la carpeta Imagenes_pad. Los nuevos
+    tienen prioridad: entran primeros (posición 0) y los que ya estaban
+    se corren una posición a la derecha; sólo si no hay ningún hueco
+    se agregan pads nuevos al final. Nunca borra ni modifica el
+    contenido de los pads existentes."""
+    try:
+        archivos = sorted(os.listdir(R.CARPETA_SONIDOS_PAD))
+    except Exception:
+        archivos = []
+    existentes = set()
+    for datos in E.config_soundboard.values():
+        if isinstance(datos, dict) and datos.get("archivo"):
+            existentes.add(_normalizar_ruta(datos["archivo"]))
+    pendientes = []
+    for archivo in archivos:
+        if not archivo.lower().endswith(EXTENSIONES_AUDIO):
+            continue
+        ruta = os.path.join(R.CARPETA_SONIDOS_PAD, archivo)
+        if _normalizar_ruta(ruta) in existentes:
+            continue
+        nombre_base = os.path.splitext(archivo)[0]
+        pendientes.append({
+            "nombre": nombre_base,
+            "archivo": ruta,
+            "imagen": _imagen_gemela(nombre_base),
+            "color": None,
+        })
+        existentes.add(_normalizar_ruta(ruta))
+    # Se insertan en orden inverso para que el primero de la lista quede
+    # primero en la fila (cada inserción entra en la posición 0).
+    for datos_nuevos in reversed(pendientes):
+        _insertar_pad_al_principio(datos_nuevos)
+    nuevos = len(pendientes)
+    if nuevos:
+        mod_configuracion.guardar_config_soundboard()
+        mod_configuracion.guardar_config_interfaz({"num_pads_soundboard": E.num_pads_soundboard})
+        construir_soundboard()
+    if avisar:
+        if nuevos:
+            messagebox.showinfo(
+                "Sonidos detectados",
+                f"Se agregaron {nuevos} pad(s) al principio desde la carpeta Sondidos_pad."
+            )
+        else:
+            messagebox.showinfo(
+                "Sonidos detectados",
+                "No hay sonidos nuevos en la carpeta Sondidos_pad."
+            )
+    return nuevos

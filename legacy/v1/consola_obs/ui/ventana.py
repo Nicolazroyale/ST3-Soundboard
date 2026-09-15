@@ -345,6 +345,54 @@ def cambiar_diseno(nombre_diseno):
     })
 
 
+FUENTE_PREDETERMINADA = "Predeterminada"
+
+
+def _fuentes_tipografia_disponibles():
+    """Opciones del selector de tipografía: la predeterminada (la que
+    el programa elige sola) más las tipografías propias registradas
+    desde la carpeta assets/fuentes que estén disponibles."""
+    propias = sorted({f for f in E._NOMBRES_FUENTES_PERSONALIZADAS
+                      if f in E._familias_disponibles})
+    return [FUENTE_PREDETERMINADA] + propias
+
+
+def aplicar_fuente_elegida(nombre, guardar=True):
+    """Aplica la tipografía elegida a todas las letras del programa
+    (textos generales y títulos, que son los que usan FUENTE_UI y
+    FUENTE_TITULO). Las fuentes de íconos y emojis (■ ↻ 🔊 🎧) se dejan
+    como están a propósito: las tipografías decorativas no traen esos
+    símbolos y quedarían en blanco."""
+    if not nombre or nombre == FUENTE_PREDETERMINADA:
+        E.FUENTE_UI = next((f for f in E._PREFERENCIAS_FUENTE_UI if f in E._familias_disponibles), "TkDefaultFont")
+        E.FUENTE_TITULO = next((f for f in E._PREFERENCIAS_FUENTE_TITULO if f in E._familias_disponibles), E.FUENTE_UI)
+        E.fuente_elegida = ""
+    else:
+        if nombre not in E._familias_disponibles:
+            return
+        E.FUENTE_UI = nombre
+        E.FUENTE_TITULO = nombre
+        E.fuente_elegida = nombre
+    if guardar:
+        mod_configuracion.guardar_config_interfaz({"fuente_ui": E.fuente_elegida})
+
+
+def cambiar_fuente(nombre):
+    """Se llama desde el combobox de tipografía del menú de ajustes:
+    aplica la fuente elegida y reconstruye la interfaz para que el
+    cambio se vea reflejado en todas las letras. La cabecera superior
+    (título, subtítulo y estado) no se reconstruye con el resto, así
+    que su fuente se actualiza acá en el acto."""
+    aplicar_fuente_elegida(nombre)
+    _reconstruir_interfaz_con_velo()
+    try:
+        E.titulo.configure(font=(E.FUENTE_TITULO, 19, "bold"))
+        E.subtitulo.configure(font=(E.FUENTE_UI, 9))
+        E.estado.configure(font=(E.FUENTE_UI, 10, "bold"))
+    except Exception:
+        pass
+
+
 def _capturar_snapshot_ventana():
     """Saca una foto de cómo se ve la ventana AHORA MISMO y la guarda
     para la próxima vez que arranque un arrastre. Se llama justo
