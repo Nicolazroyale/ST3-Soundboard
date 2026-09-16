@@ -47,23 +47,43 @@ def _dibujar_segmentos_led(canvas, ancho_segmentos, alto, bg_apagado="#10161f", 
     return segmentos
 
 
-def _actualizar_medidor_led(canvas, segmentos, db_visual, atenuado=False, bg_apagado="#10161f", saturado=False):
-    """Prende los LEDs hasta el nivel actual. Si 'saturado' es True (la
-    fuente llegó a 0 dB / está saturando), TODO el tramo encendido se
-    pinta de golpe con el color de saturación, sin importar en qué
-    posición esté cada LED (verde/amarillo/rojo normal) — igual que el
-    aviso de clipping de OBS — en vez de mantener el degradado de
-    colores de siempre. Con la fuente atenuada (gris) se usa el
-    equivalente en gris (COLOR_LED_SATURADO_GRIS) en vez del rojo
-    normal, para que el aviso de saturación siga funcionando igual
-    -mismo criterio, mismo "todo encendido de un color"- sin romper el
-    modo gris con un rojo de por medio. Sólo aplica mientras
-    'saturado' esté activo; apenas se apaga, el medidor vuelve a sus
-    colores normales."""
+def _actualizar_medidor_led(canvas, segmentos, db_visual, atenuado=False, bg_apagado="#10161f", saturado=False,
+                            estado=None):
+    """Prende los LEDs hasta el nivel actual. ... (ver docstring original).
+
+    Optimización: si nada cambió desde el último cuadro (misma cantidad
+    de LEDs encendidos, mismo saturado/atenuado) no se toca el canvas.
+    Si cambió, sólo se repintan los LEDs que cambian de color, no los 24."""
+    n_total = len(segmentos)
+    # Los segmentos vienen ordenados de arriba (0 dB) hacia abajo
+    # (-60 dB): los encendidos son siempre los últimos `n` de la lista.
+    n_encendidos = 0
     for seg in segmentos:
         if db_visual >= seg["db"]:
+            n_encendidos += 1
+    if estado is not None:
+        anterior = estado.get("ultimo")
+        actual = (n_encendidos, saturado, atenuado)
+        if anterior == actual:
+            return
+        estado["ultimo"] = actual
+        primero_viejo = n_total - (anterior[0] if anterior else 0)
+        mismo_modo = (anterior is not None and anterior[1] == saturado
+                      and anterior[2] == atenuado)
+    else:
+        primero_viejo = 0
+        mismo_modo = False
+    primero_nuevo = n_total - n_encendidos
+    # Sólo cambia la franja entre el borde viejo y el nuevo; más allá
+    # del borde mayor todo sigue igual, salvo que haya cambiado el
+    # modo (saturado/atenuado), que recolorea el tramo encendido.
+    desde = min(primero_viejo, primero_nuevo)
+    hasta = max(primero_viejo, primero_nuevo) if mismo_modo else n_total
+    color_sat = C.COLOR_LED_SATURADO_GRIS if atenuado else C.COLOR_LED_SATURADO
+    for seg in segmentos[desde:hasta]:
+        if db_visual >= seg["db"]:
             if saturado:
-                color = C.COLOR_LED_SATURADO_GRIS if atenuado else C.COLOR_LED_SATURADO
+                color = color_sat
             else:
                 color = seg["color_on_gris"] if atenuado else seg["color_on"]
         else:
@@ -76,6 +96,24 @@ def _y_para_db(db, alto=C.ALTO_CANAL):
     con 0 dB arriba de todo y -60 dB abajo de todo, igual que en OBS."""
     db = max(-60, min(0, db))
     return (-db / 60.0) * alto
+
+
+def apagar_medidores():
+    """Apaga todos los medidores (todos los LEDs al color de fondo) de
+    una sola vez. Se usa al entrar en modo super-optimizador; al salir,
+    el próximo cuadro VU los repinta completos (el estado se invalida
+    acá mismo)."""
+    for widgets in list(E.fuentes.values()):
+        try:
+            canvas = widgets.get("vu_canvas")
+            segmentos = widgets.get("vu_segmentos") or []
+            if canvas is None:
+                continue
+            for seg in segmentos:
+                canvas.itemconfig(seg["id"], fill="#10161f")
+            widgets.setdefault("vu_led_estado", {}).pop("ultimo", None)
+        except Exception:
+            pass
 
 
 def _log_debug_vu(nombre, nivel_mul_crudo, datos_vigentes, saturado, ahora):
@@ -95,6 +133,12 @@ def _log_debug_vu(nombre, nivel_mul_crudo, datos_vigentes, saturado, ahora):
 
 
 def actualizar_vu_meters_ui():
+    # Se programa el próximo cuadro ANTES de trabajar: así la cadencia
+    # es fija (33ms) y el costo del cuadro actual no suma delay.
+    try:
+        E.ventana.after(C.INTERVALO_VU_MS, actualizar_vu_meters_ui)
+    except Exception:
+        return
     ahora = time.monotonic()
     for nombre, widgets in list(E.fuentes.items()):
         atenuado = widgets.get("atenuado", False)
@@ -226,9 +270,15 @@ def actualizar_vu_meters_ui():
 
         _log_debug_vu(nombre, nivel_mul_crudo, datos_vigentes, saturado, ahora)
 
+        if E._modo_super.get("activo"):
+            # En modo super sólo se sigue el nivel (matemática barata);
+            # el pintado se pausa y se invalida para repintar completo
+            # al salir, sin saltos.
+            widgets.setdefault("vu_led_estado", {}).pop("ultimo", None)
+            continue
+
         _actualizar_medidor_led(
             widgets["vu_canvas"], widgets["vu_segmentos"], db_visual,
-            atenuado=atenuado, saturado=saturado
+            atenuado=atenuado, saturado=saturado,
+            estado=widgets.setdefault("vu_led_estado", {})
         )
-
-    E.ventana.after(C.INTERVALO_VU_MS, actualizar_vu_meters_ui)

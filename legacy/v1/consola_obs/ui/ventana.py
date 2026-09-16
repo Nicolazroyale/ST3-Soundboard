@@ -11,6 +11,7 @@ from consola_obs import utilidades as mod_utilidades
 from consola_obs.obs import cliente as mod_obs_cliente
 from consola_obs.ui import tarjeta_fuente as mod_ui_tarjeta
 from consola_obs.ui import soundboard as mod_ui_soundboard
+from consola_obs.ui import medidores as mod_ui_medidores
 
 
 def cambiar_tamano_icono(nuevo_tamano):
@@ -64,6 +65,316 @@ def _soltar_panel(nombre_actual, event):
         })
 
 
+# El divisor se mueve LIBRE (infinitas posiciones): sigue al mouse
+# píxel por píxel dentro del rango útil. Sin snap a posiciones fijas.
+MIN_PANEL_FUENTES = 140
+MIN_PANEL_SOUNDBOARD = 220
+
+
+def _limitar_divisor(valor, total, minimo_antes, minimo_despues):
+    """Posición entera de `valor` limitada al rango útil.
+    None si no hay recorrido válido."""
+    lo = max(0, minimo_antes)
+    hi = min(total, total - minimo_despues)
+    if hi <= lo or total <= 1:
+        return None
+    return int(round(max(lo, min(hi, valor))))
+
+
+def _presionar_divisor(event):
+    # OJO: identify devuelve una LISTA como [0, 'sash'] (no el string
+    # 'sash' solo), por eso se busca adentro y no con ==.
+    try:
+        donde = E.cuerpo.identify(event.x, event.y)
+    except Exception:
+        return
+    if "sash" not in str(donde):
+        return
+    # Se toma el control del arrastre (sin el break, Tk movería el sash
+    # píxel por píxel por su cuenta y volverían las posiciones
+    # intermedias).
+    # Si quedó una sesión vieja colgada (release perdido fuera de la
+    # ventana), se asienta primero para arrancar limpio.
+    if getattr(E.cuerpo, "_arrastrando_sash", False):
+        _asentar_grillas()
+    E.cuerpo._arrastrando_sash = True
+    entrar_modo_super("divisor")
+    # FASE 1: foto fija de pads y título que queda hasta soltar (sin
+    # timers en el medio).
+    _tapar_pads_con_foto()
+    _tapar_titulo_con_foto()
+    return "break"
+
+
+def _tapar_pads_con_foto():
+    """FASE 1: congela la vista actual de los pads en una foto que queda
+    en pantalla hasta la FASE 3. Así nunca se ven pads cortados."""
+    try:
+        tapa = getattr(E, "tapa_pads", None)
+        lienzo = getattr(E, "canvas_sb", None)
+        if tapa is None or lienzo is None:
+            return
+        if HAY_PILLOW and ImageGrab is not None:
+            try:
+                E.ventana.update_idletasks()
+                x, y = lienzo.winfo_rootx(), lienzo.winfo_rooty()
+                ancho, alto = lienzo.winfo_width(), lienzo.winfo_height()
+                if ancho > 1 and alto > 1:
+                    foto = ImageGrab.grab(bbox=(x, y, x + ancho, y + alto))
+                    tapa.imagen_foto = ImageTk.PhotoImage(foto)
+                    tapa.config(image=tapa.imagen_foto)
+            except Exception:
+                tapa.config(image="")
+        tapa.place(in_=lienzo, x=0, y=0, relwidth=1, relheight=1)
+        tapa.lift()
+    except Exception:
+        pass
+
+
+def _tapar_grillas():
+    """Cubre SÓLO la grilla de pads con su fondo (los faders nunca se
+    tapan). Todo lo demás (divisor, títulos, scrollbars) queda visible."""
+    try:
+        tapa = getattr(E, "tapa_pads", None)
+        lienzo = getattr(E, "canvas_sb", None)
+        if tapa is None or lienzo is None:
+            return
+        tapa.place(in_=lienzo, x=0, y=0, relwidth=1, relheight=1)
+        tapa.lift()
+    except Exception:
+        pass
+
+
+def _tapar_titulo_con_foto():
+    """Igual que pads pero para la barra del título: foto fija de
+    "Efectos De Sonido" que queda hasta soltar."""
+    try:
+        tapa = getattr(E, "tapa_titulo", None)
+        barra = getattr(E, "barra_soundboard", None)
+        if tapa is None or barra is None:
+            return
+        if HAY_PILLOW and ImageGrab is not None:
+            try:
+                E.ventana.update_idletasks()
+                x, y = barra.winfo_rootx(), barra.winfo_rooty()
+                ancho, alto = barra.winfo_width(), barra.winfo_height()
+                if ancho > 1 and alto > 1:
+                    foto = ImageGrab.grab(bbox=(x, y, x + ancho, y + alto))
+                    tapa.imagen_foto = ImageTk.PhotoImage(foto)
+                    tapa.config(image=tapa.imagen_foto)
+            except Exception:
+                tapa.config(image="")
+        tapa.place(in_=barra, x=0, y=0, relwidth=1, relheight=1)
+        tapa.lift()
+    except Exception:
+        pass
+
+
+def _destapar_grillas():
+    for tapa in (getattr(E, "tapa_pads", None), getattr(E, "tapa_titulo", None)):
+        try:
+            if tapa is not None:
+                tapa.place_forget()
+        except Exception:
+            pass
+
+
+def entrar_modo_super(origen=None):
+    """Activa el modo super-optimizador (ver _modo_super en estado.py):
+    cada evento de movimiento lo renueva y programa la salida a los
+    200ms de quietud. Es barato de llamar en cada evento. Al activarse
+    (flanco), apaga los medidores VU; vuelven solos al salir."""
+    if origen is not None:
+        E._modo_super["origen"] = origen
+    if not E._modo_super.get("activo"):
+        E._modo_super["activo"] = True
+        try:
+            mod_ui_medidores.apagar_medidores()
+        except Exception:
+            pass
+    # Vigilancia, NO salida por tiempo: cada evento la renueva; cuando
+    # pasan 150ms sin movimiento se mira el botón real: si sigue
+    # presionado se sigue esperando (sin prender nada), si ya se soltó
+    # se sale. Quedarse quieto con el botón agarrado NUNCA prende los
+    # LEDs: sólo la soltada lo hace.
+    try:
+        timer = E._modo_super.get("timer")
+        if timer is not None:
+            E.ventana.after_cancel(timer)
+    except Exception:
+        pass
+    try:
+        E._modo_super["timer"] = E.ventana.after(150, _vigilar_modo_super)
+    except Exception:
+        pass
+
+
+def _vigilar_modo_super():
+    """150ms sin movimiento: si el botón sigue presionado, se sigue
+    esperando (se reprograma); si ya se soltó (o el release se perdió
+    por el camino, ej. maximizar), se sale."""
+    E._modo_super["timer"] = None
+    if not E._modo_super.get("activo"):
+        return
+    try:
+        sigue_agarrado = P._boton_izquierdo_presionado()
+    except Exception:
+        sigue_agarrado = False
+    if sigue_agarrado:
+        try:
+            E._modo_super["timer"] = E.ventana.after(150, _vigilar_modo_super)
+        except Exception:
+            pass
+        return
+    salir_modo_super()
+
+
+def salir_modo_super():
+    """Apaga el modo super-optimizador y deja todo pintado final: los
+    LEDs se invalidan para que el próximo cuadro los repinte completos,
+    los degradados se refrescan y ambas grillas se asientan. Idempotente:
+    si no está activo, no hace nada."""
+    try:
+        timer = E._modo_super.get("timer")
+        if timer is not None:
+            E.ventana.after_cancel(timer)
+    except Exception:
+        pass
+    E._modo_super["timer"] = None
+    if not E._modo_super.get("activo"):
+        return
+    E._modo_super["activo"] = False
+    E._modo_super["origen"] = None
+    for widgets in list(E.fuentes.values()):
+        try:
+            widgets.get("vu_led_estado", {}).pop("ultimo", None)
+            redibujar = widgets.get("redibujar_cabecera")
+            if redibujar is not None:
+                redibujar()
+        except Exception:
+            pass
+    try:
+        mod_ui_tarjeta._reubicar_fuentes()
+    except Exception:
+        pass
+    try:
+        mod_ui_soundboard._reubicar_pads()
+    except Exception:
+        pass
+
+
+def _programar_asentado():
+    """Tapa y programa el asentado a los 150 ms (resetea el timer en cada
+    movimiento: mientras haya movimiento, no se muestra nada a medias)."""
+    try:
+        timer = getattr(E.ventana, "_timer_asentado", None)
+        if timer is not None:
+            E.ventana.after_cancel(timer)
+    except Exception:
+        pass
+    _tapar_grillas()
+    try:
+        E.ventana._timer_asentado = E.ventana.after(150, _asentar_grillas)
+    except Exception:
+        pass
+
+
+def _asentar_grillas():
+    """Reacomoda ambas grillas, fuerza el pintado completo y destapa.
+    Así nunca se ve un estado a medio renderizar."""
+    try:
+        E.ventana._timer_asentado = None
+    except Exception:
+        pass
+    try:
+        mod_ui_tarjeta._reubicar_fuentes()
+    except Exception:
+        pass
+    try:
+        mod_ui_soundboard._reubicar_pads()
+    except Exception:
+        pass
+    try:
+        E.ventana.update_idletasks()
+    except Exception:
+        pass
+    _destapar_grillas()
+
+
+def _mover_divisor(event):
+    if not getattr(E.cuerpo, "_arrastrando_sash", False):
+        return
+    entrar_modo_super("divisor")
+    try:
+        # El evento puede venir de cualquier widget (burbujea hasta la
+        # ventana): se pasa a coordenadas del PanedWindow.
+        px = event.x_root - E.cuerpo.winfo_rootx()
+        py = event.y_root - E.cuerpo.winfo_rooty()
+        mins = {"fuentes": MIN_PANEL_FUENTES, "soundboard": MIN_PANEL_SOUNDBOARD}
+        orden = list(E.orden_paneles or ["fuentes", "soundboard"])
+        min_antes = mins.get(orden[0], 140)
+        min_despues = mins.get(orden[-1], 140)
+        nx = _limitar_divisor(px, E.cuerpo.winfo_width(), min_antes, min_despues)
+        ny = _limitar_divisor(py, E.cuerpo.winfo_height(), min_antes, min_despues)
+        if nx is None or ny is None:
+            return
+        # Sólo se actúa si cambió de píxel. FASE 2: se coloca
+        # el sash y se renderiza todo en segundo plano (tapado por la
+        # foto de la FASE 1), sin mostrar nada hasta la FASE 3. Sin
+        # timers en el medio: la copia queda hasta soltar.
+        if getattr(E.cuerpo, "_ultimo_snap", None) == (nx, ny):
+            return
+        E.cuerpo._ultimo_snap = (nx, ny)
+        _tapar_grillas()
+        E.cuerpo.sash_place(0, nx, ny)
+        try:
+            E.ventana.update_idletasks()
+        except Exception:
+            pass
+        try:
+            mod_ui_tarjeta._reubicar_fuentes()
+        except Exception:
+            pass
+        try:
+            mod_ui_soundboard._reubicar_pads()
+        except Exception:
+            pass
+        try:
+            E.ventana.update_idletasks()
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return "break"
+
+
+def _soltar_divisor(event):
+    if not getattr(E.cuerpo, "_arrastrando_sash", False):
+        return
+    E.cuerpo._arrastrando_sash = False
+    try:
+        timer = getattr(E.ventana, "_timer_asentado", None)
+        if timer is not None:
+            E.ventana.after_cancel(timer)
+            E.ventana._timer_asentado = None
+    except Exception:
+        pass
+    _asentar_grillas()
+    # Al soltar el divisor termina el resize: los medidores vuelven ya.
+    salir_modo_super()
+
+
+def _soltar_boton_termina_resize(event=None):
+    """Cualquier soltada del botón izquierdo termina el resize de borde
+    de ventana o divisor: los medidores vuelven en el acto. Sólo actúa
+    si el modo se originó en un resize real (borde o divisor); los clics
+    comunes no hacen nada."""
+    try:
+        if E._modo_super.get("activo") and E._modo_super.get("origen") in ("ventana", "divisor"):
+            salir_modo_super()
+    except Exception:
+        pass
+
 
 def construir_cuerpo():
 
@@ -88,9 +399,16 @@ def construir_cuerpo():
     # después de esto podría creer (por error) que el ancho no cambió y
     # saltarse el reacomodo que hace falta.
     E._ultimo_ancho_celda_fuentes["valor"] = None
+    E._ultima_grilla_fuentes["clave"] = None
+    E._ultimas_columnas_pads["valor"] = None
 
     E.cuerpo = tk.PanedWindow(E.ventana, orient=E.orientacion_paneles, bg="#0b0e13", sashwidth=8, sashrelief="flat")
     E.cuerpo.pack(fill="both", expand=True)
+    # El press va acá (a nivel widget, para frenar el drag nativo con
+    # break antes de que arranque); motion y release van una sola vez
+    # a nivel ventana en app.py (llegan se esté donde se esté el mouse,
+    # por bubbling).
+    E.cuerpo.bind("<ButtonPress-1>", _presionar_divisor)
     # Los widgets nuevos se apilan por encima de los que ya existían;
     # si el velo de redimensionado está puesto (ver más abajo, cerca
     # del final del archivo), hay que volver a subirlo por encima de
@@ -166,6 +484,11 @@ def construir_cuerpo():
     titulo_soundboard.pack(side="left", padx=12)
     titulo_soundboard.bind("<ButtonPress-1>", lambda e: _iniciar_arrastre_panel("soundboard"))
     titulo_soundboard.bind("<ButtonRelease-1>", lambda e: _soltar_panel("soundboard", e))
+
+    # Tapa del título: mismas 4 fases que los pads (foto fija hasta soltar).
+    E.tapa_titulo = tk.Label(E.barra_soundboard, bg="#151a24", bd=0, highlightthickness=0)
+    E.tapa_titulo.place_forget()
+    E.tapa_titulo.bind("<ButtonPress-1>", lambda e: _asentar_grillas())
 
     E.marco_soundboard_scroll = tk.Frame(E.marco_derecho, bg="#10141b")
     E.marco_soundboard_scroll.pack(fill="both", expand=True)
@@ -256,6 +579,15 @@ def construir_cuerpo():
     # van a encontrar ningún cambio y no van a mover nada en pantalla.
     E.ventana.after(30, mod_ui_soundboard._aplicar_redimension_soundboard)
     E.ventana.after(30, mod_ui_tarjeta._aplicar_redimension_fuentes)
+
+    # Tapas anti-corte: cubren sólo las grillas (pads y faders). Todo lo
+    # demás (divisor, títulos, scrollbars) queda visible. Se recrean
+    # ocultas con cada construir_cuerpo.
+    E.tapa_pads = tk.Label(E.marco_soundboard_scroll, bg="#10141b", bd=0, highlightthickness=0)
+    E.tapa_pads.place_forget()
+    # Si alguna vez queda tapado sin sesión (release perdido), un clic
+    # sobre la tapa lo destapa y acomoda (asentar es idempotente).
+    E.tapa_pads.bind("<ButtonPress-1>", lambda e: _asentar_grillas())
 
 
 def actualizar_scroll(event=None):
@@ -418,11 +750,7 @@ def _capturar_snapshot_ventana():
 
 def _actualizar_imagen_velo():
     """Escala la última foto guardada al tamaño actual de la ventana y
-    la deja puesta en el velo. Escalar una imagen ya capturada es
-    barato (no reconstruye ningún widget), así que esto sí se puede
-    llamar en cada evento de arrastre sin volver a generar el lag que
-    se quería eliminar: es lo que da la sensación de que la interfaz
-    "sigue" al mouse en tiempo real."""
+    la deja puesta en el velo (para las reconstrucciones explícitas)."""
     imagen = E._captura_ventana["imagen_pil"]
     ancho, alto = max(1, E.ventana.winfo_width()), max(1, E.ventana.winfo_height())
     if imagen is None:
@@ -445,20 +773,14 @@ def _actualizar_imagen_velo():
 
 
 def _mostrar_velo_redimension():
-    # El congelado nativo (WM_SETREDRAW) sólo frena el repintado de la
-    # VENTANA como tal; en Windows cada pad/botón es su propia ventana
-    # nativa hija (Tk crea un HWND por widget), así que cuando se
-    # destruyen y recrean durante una reconstrucción, cada uno se pinta
-    # solo apenas existe, sin que el freeze de la ventana lo tape (eso
-    # es el parpadeo "por capas"). El velo de Tk sí lo tapa siempre,
-    # sea cual sea la cantidad de ventanas nativas por debajo, porque
-    # es un hermano posicionado ENCIMA dentro del mismo árbol de Tk. Por
-    # eso en todas las plataformas usamos el velo como tapa real, y en
-    # Windows además sumamos el freeze nativo como refuerzo (evita el
-    # micro-destello que Windows pinta solo, por su cuenta, al
-    # redimensionar el marco de la ventana).
-    if P._ES_WINDOWS:
-        P._congelar_pintado_ventana()
+    # El velo de Tk tapa siempre, sea cual sea la cantidad de ventanas
+    # nativas por debajo, porque es un hermano posicionado ENCIMA dentro
+    # del mismo árbol de Tk. A propósito NO se congela el pintado acá:
+    # la gracia del velo es que su foto se repinta en vivo siguiendo al
+    # borde (ver _actualizar_imagen_velo); con el freeze puesto esos
+    # repintados no saldrían y el arrastre se vería como un cuadro
+    # congelado. El freeze se usa sólo alrededor de la reconstrucción
+    # (ver _reconstruir_interfaz_con_velo y _aplicar_redimension).
     _actualizar_imagen_velo()
     E.velo_redimension.place(x=0, y=0, relwidth=1, relheight=1)
     E.velo_redimension.lift()
@@ -466,8 +788,6 @@ def _mostrar_velo_redimension():
 
 def _ocultar_velo_redimension():
     E.velo_redimension.place_forget()
-    if P._ES_WINDOWS:
-        P._descongelar_pintado_ventana()
     # La interfaz de verdad ya está armada y visible: es el momento
     # justo para renovar la foto, así el PRÓXIMO arrastre arranca
     # mostrando este estado (y no uno viejo).
@@ -480,78 +800,64 @@ def _reconstruir_interfaz_con_velo():
     necesite reconstruir todo de golpe —cambiar el tamaño de ícono,
     cambiar el diseño de paneles, soltar un panel arrastrado a otro
     lado— y no sólo al redimensionar la ventana, para que ninguna de
-    esas acciones deje ver un instante con la interfaz a medio armar."""
+    esas acciones deje ver un instante con la interfaz a medio armar.
+    En Windows se suma el freeze nativo sólo acá (durante el armado),
+    nunca durante el arrastre (ver _mostrar_velo_redimension)."""
     _mostrar_velo_redimension()
+    if P._ES_WINDOWS:
+        P._congelar_pintado_ventana()
     try:
         construir_cuerpo()
         E.ventana.update_idletasks()
     finally:
+        if P._ES_WINDOWS:
+            P._descongelar_pintado_ventana()
         _ocultar_velo_redimension()
+
+
+def _reubicar_vivo_ventana():
+    """Reacomoda ambas grillas en vivo durante el redimensionado de la
+    ventana, sin tapar nada: sólo grid_forget + grid, sin destruir ni
+    crear nada, así el movimiento se ve fluido."""
+    try:
+        E.ventana._timer_resize_vivo = None
+    except Exception:
+        pass
+    try:
+        mod_ui_tarjeta._reubicar_fuentes()
+    except Exception:
+        pass
+    try:
+        mod_ui_soundboard._reubicar_pads()
+    except Exception:
+        pass
 
 
 def _al_redimensionar_ventana(event):
-    """Cuando el usuario cambia el tamaño de la ventana, esperamos a
-    que se quede quieta (cada nuevo evento reinicia la espera) y ahí
-    sí recalculamos el factor de escala y, si cambió lo suficiente,
-    reconstruimos toda la interfaz para que faders, botones y pads del
-    soundboard queden proporcionados al nuevo tamaño.
-
-    Mientras dura el arrastre, los widgets de verdad NO se tocan (nada
-    se reacomoda ni se recrea): lo único que pasa en cada evento es que
-    la foto congelada del velo se reescala al nuevo tamaño (ver
-    _actualizar_imagen_velo), así que lo que el usuario ve moverse en
-    vivo es esa foto siguiendo al borde de la ventana, no la interfaz
-    real reconstruyéndose a los tirones."""
+    """Si cambió el TAMAÑO de la ventana, reacomoda las grillas en vivo
+    (throttle corto, sin tapas). Mover la ventana de lugar (misma
+    medida) no hace nada. Las tapas con foto quedan sólo para el drag
+    del divisor."""
     if event.widget is not E.ventana:
         return
-    if E._trabajo_redimension["id"] is None:
-        _mostrar_velo_redimension()
-    else:
-        E.ventana.after_cancel(E._trabajo_redimension["id"])
-        # El velo (con su foto) es ahora la tapa real en todas las
-        # plataformas, así que en todas hay que ir reescalando la foto
-        # en cada evento para que siga el borde de la ventana en vivo.
-        _actualizar_imagen_velo()
-    # Este delay es el que define qué tan "quieta" tiene que quedarse
-    # la ventana antes de actualizar: cada evento nuevo lo reinicia,
-    # así que mientras el usuario siga moviendo el borde esto nunca
-    # llega a dispararse.
-    E._trabajo_redimension["id"] = E.ventana.after(180, _aplicar_redimension)
-
-
-def _aplicar_redimension():
-    E._trabajo_redimension["id"] = None
-
-    # Si ya hay una reconstrucción corriendo (poco probable, pero puede
-    # pasar si el usuario suelta y vuelve a arrastrar muy rápido),
-    # reprogramamos para más tarde en vez de superponerla: lanzar una
-    # segunda reconstrucción a mitad de la primera es lo que producía
-    # los "bugs visuales" (paneles a medio armar, sashes en posiciones
-    # raras, tarjetas duplicadas un instante). El velo (con su foto)
-    # sigue puesto mientras tanto, así que no se ve nada raro en el medio.
-    if E._reconstruccion_en_curso["activa"]:
-        E._trabajo_redimension["id"] = E.ventana.after(180, _aplicar_redimension)
-        return
-
-    nuevo_factor = mod_utilidades.factor_escala_ui()
-    if abs(nuevo_factor - E._ultimo_factor_escala["valor"]) < 0.03:
-        # El arrastre terminó pero el cambio de tamaño fue chico y no
-        # amerita reconstruir nada: destapamos y listo.
-        _ocultar_velo_redimension()
-        return
-    E._ultimo_factor_escala["valor"] = nuevo_factor
-
-    E._reconstruccion_en_curso["activa"] = True
     try:
-        # El velo (con la foto congelada) ya está puesto desde que
-        # arrancó el arrastre (ver _al_redimensionar_ventana), así que
-        # durante toda esta reconstrucción el usuario sigue viendo esa
-        # foto, nunca los paneles a medio armar.
-        construir_cuerpo()
-        E.ventana.update_idletasks()
-    finally:
-        _ocultar_velo_redimension()
-        E._reconstruccion_en_curso["activa"] = False
+        tam = (E.ventana.winfo_width(), E.ventana.winfo_height())
+    except Exception:
+        return
+    if getattr(E.ventana, "_ult_geom", None) == tam:
+        return
+    E.ventana._ult_geom = tam
+    entrar_modo_super("ventana")
+    try:
+        timer = getattr(E.ventana, "_timer_resize_vivo", None)
+        if timer is not None:
+            E.ventana.after_cancel(timer)
+    except Exception:
+        pass
+    try:
+        E.ventana._timer_resize_vivo = E.ventana.after(15, _reubicar_vivo_ventana)
+    except Exception:
+        pass
 
 
 def al_cerrar():

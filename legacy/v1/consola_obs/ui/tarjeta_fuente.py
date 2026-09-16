@@ -25,26 +25,25 @@ def _ancho_preferido_fuente():
 
 
 def _ancho_contenedor_fuente():
-    """Ancho aproximado (con su padding) de una tarjeta de fuente, al
-    factor de escala actual. Se usa para calcular cuántas entran por
-    fila, igual que se hace con los pads del soundboard."""
-    return _ancho_preferido_fuente() + 12                  
+    """Ancho real (con su padding) que ocupa una tarjeta de fuente en la
+    grilla: tarjeta + sombra (18) + padx de grilla (6+6). Es el paso de
+    columna que usa _reubicar_fuentes, así el cálculo de columnas
+    coincide con lo que se ve y la tarjeta que no entra baja de fila
+    en vez de quedar tapada."""
+    return _ancho_preferido_fuente() + 30                  
 
 
 def _columnas_disponibles_fuentes():
-    """Cuántas tarjetas de fuente entran por fila en el ancho actual del
-    panel. A diferencia del soundboard (ver _columnas_disponibles), acá
-    NO se usa ningún margen de tolerancia: las tarjetas de fuente son de
-    tamaño FIJO (ver _ancho_celda_fuentes, ya no se achican para entrar),
-    así que si una columna entera no entra, tiene que bajar de fila sí o
-    sí -sostenerla "por las dudas" sólo hace que quede una tarjeta
-    cortada en el borde del panel en vez de acomodarse en la fila de
-    abajo-."""
+    """Cuántas tarjetas de fuente entran por fila: piso estricto, sin
+    tolerancia más que 2px. Apenas una tarjeta quedaría tapada (aunque
+    sea un píxel más allá de esos 2px), baja a la fila de abajo. Así
+    ninguna fuente queda nunca a medio ver ni se oculta: siempre se
+    ve entera, en su fila."""
     ancho_disponible = E.canvas.winfo_width()
-    ancho_celda_con_padding = _ancho_contenedor_fuente()
-    if ancho_disponible <= 1 or ancho_celda_con_padding <= 0:
+    celda = _ancho_contenedor_fuente()
+    if ancho_disponible <= 1 or celda <= 0:
         return E.columnas_fuentes
-    return max(1, ancho_disponible // ancho_celda_con_padding)
+    return max(1, int((ancho_disponible + 2) // celda))
 
 
 def _ancho_celda_fuentes():
@@ -129,6 +128,12 @@ def _reubicar_fuentes(forzar=False):
     ancho_celda = _ancho_celda_fuentes()
     ancho_sin_cambios = (not forzar) and (E._ultimo_ancho_celda_fuentes["valor"] == ancho_celda)
     E._ultimo_ancho_celda_fuentes["valor"] = ancho_celda
+    # Si no cambió ni la cantidad de columnas ni el ancho, las posiciones
+    # son idénticas: no hay nada que mover.
+    if (not forzar) and E._ultima_grilla_fuentes.get("clave") == (columnas, ancho_celda):
+        mod_ui_ventana.actualizar_scroll()
+        return
+    E._ultima_grilla_fuentes["clave"] = (columnas, ancho_celda)
     for idx, nombre in enumerate(E.orden_fuentes):
         if nombre not in E.fuentes:
             continue
@@ -147,35 +152,25 @@ def _reubicar_fuentes(forzar=False):
             _reajustar_fuente_nombre_tarjeta(nombre, ancho_celda - 24)
         # Reposicionar en la grilla es barato (no crea nada nuevo), así
         # que se hace siempre, haya cambiado el ancho o no: es lo que
-        # de verdad mueve una tarjeta a otra fila/columna.
+        # de verdad mueve una tarjeta a otra fila/columna. Las tarjetas
+        # siempre se ven enteras: la que no entra baja de fila (ver
+        # _columnas_disponibles_fuentes), nunca se oculta.
         tarjeta_sombra.grid(row=fila, column=col, padx=6, pady=6, sticky="n")
     mod_ui_ventana.actualizar_scroll()
 
 
 def _al_redimensionar_fuentes(event=None):
-    """Recalcula cuántas columnas entran en el ancho actual del panel de
-    fuentes y, si cambió, reacomoda las tarjetas (sin recrearlas). Se
-    espera un toque de calma antes de reacomodar (igual que con el
-    redimensionado de toda la ventana): reaccionar en CADA evento de
-    Configure mientras se arrastra el borde es lo que hacía que las
-    tarjetas se vieran saltando/superpuestas a mitad de camino."""
+    """Reacomoda la grilla en vivo durante el arrastre (throttle corto
+    de 15ms): sólo reubica celdas ya existentes, no destruye ni crea
+    nada (ver _reubicar)."""
+    mod_ui_ventana.entrar_modo_super()
     if E._trabajo_redimension_fuentes["id"] is not None:
         E.ventana.after_cancel(E._trabajo_redimension_fuentes["id"])
-    # Antes 90ms, después 40ms; ahora 16ms (aprox. un cuadro de
-    # pantalla a 60Hz): es el mínimo con sentido, porque durante un
-    # arrastre real los eventos de Configure ya vienen espaciados por
-    # el refresco de pantalla, así que bajar más no cambia nada salvo
-    # hacer más trabajo de más.
-    E._trabajo_redimension_fuentes["id"] = E.ventana.after(16, _aplicar_redimension_fuentes)
+    E._trabajo_redimension_fuentes["id"] = E.ventana.after(15, _aplicar_redimension_fuentes)
 
 
 def _aplicar_redimension_fuentes():
     E._trabajo_redimension_fuentes["id"] = None
-    if E._reconstruccion_en_curso["activa"]:
-        # Hay una reconstrucción completa de la interfaz en curso (ver
-        # _aplicar_redimension): no tocar la grilla ahora, la
-        # reconstrucción ya va a dejarla acomodada al tamaño final.
-        return
     nuevas_columnas = _columnas_disponibles_fuentes()
     if nuevas_columnas != E.columnas_fuentes:
         E.columnas_fuentes = nuevas_columnas
@@ -261,7 +256,6 @@ def crear_fader_fuente(nombre, vol_db, muted, tipo_monitor, nombre_visible=None)
         nombre_visible = nombre
 
     medida_icono = mod_utilidades.medida_actual()
-    f = mod_utilidades.factor_escala_ui()
     alto_canal = medida_icono["fuente_alto_canal"]
     ancho_barra_vu = medida_icono["fuente_ancho_vu"]
     ancho_contenedor = _ancho_celda_fuentes()
@@ -281,8 +275,10 @@ def crear_fader_fuente(nombre, vol_db, muted, tipo_monitor, nombre_visible=None)
         width=ancho_contenedor + 18, height=alto_contenedor + 18,
         highlightthickness=0
     )
-    fila, col = _fila_col_fuente(nombre)
-    tarjeta_sombra.grid(row=fila, column=col, padx=6, pady=6, sticky="n")
+    # OJO: no se grilla acá a propósito. La tarjeta se muestra al final
+    # de esta función, ya con todo su contenido construido y pintado,
+    # para que el primer cuadro que se ve sea la versión cargada y
+    # nunca la tarjeta vacía.
     tarjeta_sombra.grid_propagate(False)
 
     mod_ui_dibujo._dibujar_sombra_difusa(
@@ -353,6 +349,22 @@ def crear_fader_fuente(nombre, vol_db, muted, tipo_monitor, nombre_visible=None)
         if ancho_cab < 2 or alto_cab < 2:
             return
         color_base = cv.datos_color_actual
+        cx, cy = ancho_cab / 2, alto_cab / 2
+        cv.coords(id_sombra, cx + 1, cy + 2)
+        cv.coords(id_nombre, cx, cy + 1)
+        if E._modo_super.get("activo"):
+            # En modo super el texto se recentra pero las bandas no se
+            # tocan: se repintan todas juntas al salir del modo.
+            return
+        # Las bandas del degradado sólo se redibujan si el tamaño cambió
+        # de verdad (tolerancia 6px): durante un redimensionado llegan
+        # decenas de <Configure> por segundo y recrear las 14 bandas en
+        # cada uno es lo que producía los cortes.
+        ultimo = getattr(cv, "datos_ultimo_gradiente", None)
+        if (ultimo is not None and ultimo[0] == color_base
+                and abs(ancho_cab - ultimo[1]) < 6 and abs(alto_cab - ultimo[2]) < 6):
+            return
+        cv.datos_ultimo_gradiente = (color_base, ancho_cab, alto_cab)
         cv.delete("degradado_cabecera")
         color_claro = mod_ui_dibujo._aclarar_color(color_base, 40)
         color_oscuro = mod_ui_dibujo._oscurecer_color(color_base, 15)
@@ -360,9 +372,6 @@ def crear_fader_fuente(nombre, vol_db, muted, tipo_monitor, nombre_visible=None)
         for iid in ids:
             cv.itemconfig(iid, tags=("degradado_cabecera",))
         cv.tag_lower("degradado_cabecera")
-        cx, cy = ancho_cab / 2, alto_cab / 2
-        cv.coords(id_sombra, cx + 1, cy + 2)
-        cv.coords(id_nombre, cx, cy + 1)
 
     cabecera_canal.bind("<Configure>", _redibujar_gradiente_cabecera_fuente)
     # Doble clic sobre el título = renombrar. Clic derecho en cualquier
@@ -523,6 +532,18 @@ def crear_fader_fuente(nombre, vol_db, muted, tipo_monitor, nombre_visible=None)
     }
 
     _actualizar_estado_gris(nombre)
+
+    # Recién ahora, con la tarjeta completa, se la ubica en la grilla y
+    # se fuerza su pintado: el primer cuadro visible ya es la versión
+    # cargada (degradado, nombre centrado, VU, fader y botones), nunca
+    # la tarjeta vacía.
+    fila, col = _fila_col_fuente(nombre)
+    tarjeta_sombra.grid(row=fila, column=col, padx=6, pady=6, sticky="n")
+    try:
+        tarjeta_sombra.update_idletasks()
+        _redibujar_gradiente_cabecera_fuente()
+    except Exception:
+        pass
 
 
 def _actualizar_estado_gris(nombre):
@@ -951,7 +972,7 @@ def _renombrar_fuente_en_hilo(nombre_viejo, nombre_nuevo):
     try:
         E.cliente_obs.set_input_name(nombre_viejo, nombre_nuevo)
     except Exception as e:
-        E.ventana.after(0, lambda: messagebox.showerror(
+        E.ventana.after(0, lambda e=e: messagebox.showerror(
             "Error al renombrar",
             f"No se pudo renombrar la fuente en OBS.\n\n{e}"
         ))

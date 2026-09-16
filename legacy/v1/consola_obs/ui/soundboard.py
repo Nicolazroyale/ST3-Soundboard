@@ -12,6 +12,7 @@ from consola_obs import configuracion as mod_configuracion
 from consola_obs import utilidades as mod_utilidades
 from consola_obs.audio import reproduccion as mod_audio_reproduccion
 from consola_obs.ui import dibujo as mod_ui_dibujo
+from consola_obs.ui import ventana as mod_ui_ventana
 
 
 def asignar_sonido(indice):
@@ -505,99 +506,62 @@ def _apagar_pad_si_token_vigente(indice, token):
 
 def _columnas_disponibles():
     ancho_disponible = E.canvas_sb.winfo_width()
-    ancho_celda_con_padding = mod_utilidades.medida_actual()["pad_ancho"] + 20
-    if ancho_disponible <= 1 or ancho_celda_con_padding <= 0:
+    celda = mod_utilidades.medida_actual()["pad_ancho"] + 20
+    if ancho_disponible <= 1 or celda <= 0:
         return E.columnas_soundboard
-    columnas_actuales = max(1, E.columnas_soundboard)
-    columnas_teoricas = max(1, ancho_disponible // ancho_celda_con_padding)
-    if columnas_teoricas >= columnas_actuales:
-        return columnas_teoricas
-    # Mismo colchón que en la grilla de fuentes (ver
-    # MARGEN_HISTERESIS_COLUMNAS): que el panel se achique "apenas un
-    # poco" no debe tirar de golpe una columna entera de pads a la fila
-    # de abajo.
-    espacio_necesario = columnas_actuales * ancho_celda_con_padding
-    if espacio_necesario - ancho_disponible <= C.MARGEN_HISTERESIS_COLUMNAS:
-        return columnas_actuales
-    return columnas_teoricas
-
-
-def _arrastre_ventana_en_curso():
-    """True mientras el usuario está arrastrando el borde de LA VENTANA
-    (no el divisor entre paneles) y todavía no se soltó: es la ventana
-    de tiempo en la que _al_redimensionar_ventana ya mostró el velo y
-    está esperando a que el arrastre se quede quieto para reconstruir
-    todo de una (ver _trabajo_redimension, más abajo en el archivo).
-    Se consulta con try/except porque ese nombre se define más adelante
-    en el archivo (mismo motivo que el try/except de velo_redimension
-    en construir_cuerpo): a esta altura de la carga del módulo todavía
-    no existe, pero para cuando esta función se llegue a llamar de
-    verdad (el usuario ya movió el mouse) sí."""
-    try:
-        return E._trabajo_redimension["id"] is not None
-    except NameError:
-        return False
+    # Regla 25%: la última columna puede quedar tapada hasta un cuarto
+    # de pad; si se tapa más, baja a la fila de abajo.
+    return max(1, int((ancho_disponible + 0.25 * celda) // celda))
 
 
 def _al_redimensionar_soundboard(event=None):
-    """Recalcula cuántas columnas entran en el ancho actual y sólo
-    reconstruye la grilla si ese número cambió (o si el ancho se movió
-    lo suficiente como para que las celdas ya no encajen bien, ver
-    _ultimo_ancho_soundboard).
-
-    Mientras el usuario está arrastrando el borde de LA VENTANA, este
-    handler no programa nada: esta grilla destruye y vuelve a crear
-    todos los pads, y hacerlo en cada pixel de arrastre (aunque sea con
-    espera de 16ms) es trabajo pesado compitiendo por CPU con el propio
-    arrastre, y ESO es lo que se veía como parpadeo/tironeo de la
-    ventana. En vez de eso, se deja que el mecanismo de toda la ventana
-    (_al_redimensionar_ventana/_aplicar_redimension, más abajo) haga UNA
-    sola reconstrucción completa (construir_cuerpo → construir_soundboard)
-    recién cuando el usuario suelta el borde, tapada por el velo. Fuera
-    de un arrastre de ventana (por ejemplo, moviendo el divisor entre
-    paneles) el comportamiento no cambia: se sigue esperando sólo el
-    toque de calma de 16ms de siempre."""
-    if _arrastre_ventana_en_curso():
-        return
+    """Reacomoda la grilla en vivo durante el arrastre (throttle corto
+    de 15ms): sólo reubica celdas ya existentes, no destruye ni crea
+    nada (ver _reubicar_pads)."""
+    mod_ui_ventana.entrar_modo_super()
     if E._trabajo_redimension_soundboard["id"] is not None:
         E.ventana.after_cancel(E._trabajo_redimension_soundboard["id"])
-    # Ídem comentario en el redimensionado del panel de fuentes: 16ms
-    # es, en la práctica, "apenas se puede".
-    E._trabajo_redimension_soundboard["id"] = E.ventana.after(16, _aplicar_redimension_soundboard)
+    E._trabajo_redimension_soundboard["id"] = E.ventana.after(15, _aplicar_redimension_soundboard)
 
 
 def _aplicar_redimension_soundboard():
     E._trabajo_redimension_soundboard["id"] = None
-    if E._reconstruccion_en_curso["activa"]:
+    _reubicar_pads()
+
+
+def _reubicar_pads():
+    """Reacomoda las celdas ya existentes según las columnas que entran
+    ahora, SIN destruir ni recrear nada (como el soundboard de Nico:
+    pads de tamaño fijo que solo cambian de fila/columna). Es barato y
+    no parpadea, así que se puede llamar en vivo durante un arrastre."""
+    columnas = max(1, _columnas_disponibles())
+    E.columnas_soundboard = columnas
+    # Si la cantidad de columnas no cambió, las posiciones son las
+    # mismas: no hay nada que mover.
+    if E._ultimas_columnas_pads.get("valor") == columnas:
+        mod_ui_ventana.actualizar_scroll_soundboard()
         return
-    nuevas_columnas = _columnas_disponibles()
-    ancho_actual = E.canvas_sb.winfo_width()
-    ancho_referencia = E._ultimo_ancho_soundboard["valor"]
-    ancho_se_corrio_de_mas = (
-        ancho_actual > 1
-        and ancho_referencia is not None
-        and abs(ancho_actual - ancho_referencia) > C.MARGEN_REAJUSTE_ANCHO_SOUNDBOARD
-    )
-    if nuevas_columnas != E.columnas_soundboard or ancho_se_corrio_de_mas:
-        E.columnas_soundboard = nuevas_columnas
-        construir_soundboard()
+    E._ultimas_columnas_pads["valor"] = columnas
+    for i in range(E.num_pads_soundboard):
+        celda = E._celdas_pads.get(i)
+        if celda is None:
+            continue
+        celda.grid_forget()
+        celda.grid(row=i // columnas, column=i % columnas, padx=6, pady=6)
+    mod_ui_ventana.actualizar_scroll_soundboard()
 
 
 def construir_soundboard():
-    E._ultimo_ancho_soundboard["valor"] = E.canvas_sb.winfo_width()
     for widget in E.panel_soundboard.winfo_children():
         widget.destroy()
 
     columnas = max(1, E.columnas_soundboard)
     medida = mod_utilidades.medida_actual()
 
-    ancho_preferido = medida["pad_ancho"]
-    ancho_disponible = E.canvas_sb.winfo_width()
-    padding_por_celda = 20
-    if ancho_disponible > 1:
-        ancho_celda = max(ancho_preferido, (ancho_disponible // columnas) - padding_por_celda)
-    else:
-        ancho_celda = ancho_preferido
+    # Tamaño FIJO de catálogo (como los pads de Nico): la celda no se
+    # estira según el espacio disponible; lo único que cambia con el
+    # ancho del panel es la cantidad de columnas (ver _reubicar_pads).
+    ancho_celda = medida["pad_ancho"]
 
     ancho_imagen_pad_base = ancho_celda - 12
     pie_celda = 76
@@ -811,7 +775,7 @@ def construir_soundboard():
     # ------------------------------------------------------------------
     # BOTÓN "AGREGAR PAD": misma placa de vidrio, en formato barra ancha
     # ------------------------------------------------------------------
-    alto_barra_agregar = max(62, round(76 * mod_utilidades.factor_escala_ui()))
+    alto_barra_agregar = 76
 
     marco_agregar = tk.Frame(E.panel_soundboard, bg=C.COLOR_PANEL_SOUNDBOARD)
     marco_agregar.pack(fill="x")
@@ -828,7 +792,7 @@ def construir_soundboard():
 
     _estado_mas = {"hover": False, "ancho": 0, "alto": 0}
 
-    def _redibujar_boton_mas(event=None, forzar=False):
+    def _pintar_boton_mas(forzar=False):
         ancho_mas = canvas_mas.winfo_width() or 240
         alto_mas = canvas_mas.winfo_height() or alto_barra_agregar
         if not forzar and (ancho_mas, alto_mas) == (_estado_mas["ancho"], _estado_mas["alto"]):
@@ -875,6 +839,29 @@ def construir_soundboard():
             x_agregar, alto_mas / 2, text=texto_agregar, fill="#c3cee5",
             font=(E.FUENTE_UI, tam_agregar, "bold")
         )
+
+    def _redibujar_boton_mas(event=None, forzar=False):
+        # Gate ESPACIAL: en vez de repintar en cada posición intermedia
+        # del arrastre (infinitas), se repinta cada ~32px (~30 pasos por
+        # arrastre típico). Si no se movió lo suficiente, se saltea: no
+        # hay nada nuevo que mostrar. Hover = forzar (inmediato).
+        if forzar:
+            try:
+                _pintar_boton_mas(forzar=True)
+            except Exception:
+                pass
+            return
+        try:
+            ancho_ahora = canvas_mas.winfo_width()
+            alto_ahora = canvas_mas.winfo_height()
+            ultimo = _estado_mas.get("ultimo", (0, 0))
+            if (abs(ancho_ahora - ultimo[0]) < C.SALTO_MINIMO_REDIBUJO_PX
+                    and abs(alto_ahora - ultimo[1]) < C.SALTO_MINIMO_REDIBUJO_PX):
+                return
+            _estado_mas["ultimo"] = (ancho_ahora, alto_ahora)
+            _pintar_boton_mas()
+        except Exception:
+            pass
 
     def _hover_mas(_e, encendido):
         _estado_mas["hover"] = encendido
