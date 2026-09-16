@@ -244,6 +244,14 @@ def _mezclar_hex(color_a, color_b, t):
     return "#%02x%02x%02x" % _mezclar_rgb(color_a, color_b, t)
 
 
+def _desaturar_color(color_hex, cantidad=0.45):
+    """Baja la saturación mezclando con gris (para etiquetas en Moderna)."""
+    try:
+        return _mezclar_hex(color_hex, "#808080", cantidad)
+    except Exception:
+        return color_hex
+
+
 def _gradiente_imagen(tam, color_arriba, color_abajo):
     """Franja vertical de color continuo (sin escalones), hecha con una
     tira de 1 pixel de ancho que después se estira: es la forma barata
@@ -435,6 +443,56 @@ def _placa_tk(ancho, alto, acento=None, encendido=False, hover=False, presionado
         E._cache_placas.clear()
     E._cache_placas[clave] = foto
     return foto
+
+
+_cache_placas_modernas = {}
+
+
+def _placa_moderna_tk(ancho, alto, acento=None, encendido=False, hover=False, presionado=False,
+                      color_marco=None, reproduciendo=False):
+    """Pad plano estilo OBS (tema Moderna): cuadrado con esquinas apenas
+    redondeadas, relleno liso sin degradado y borde fino de acento. Misma
+    firma que _placa_tk para intercambiarlas sin tocar quien llama."""
+    if not HAY_PILLOW:
+        return None
+    ancho, alto = max(24, int(ancho)), max(24, int(alto))
+    clave = (ancho, alto, acento, bool(encendido), bool(hover), bool(presionado), color_marco,
+             bool(reproduciendo))
+    foto = _cache_placas_modernas.get(clave)
+    if foto is not None:
+        return foto
+    try:
+        S = 4
+        W, H = ancho * S, alto * S
+        lado = min(W, H)
+        radio = max(3 * S, round(lado * 0.07))
+        grosor = max(2 * S, round(lado * 0.016))
+        if reproduciendo:
+            borde = _mezclar_hex(acento or color_marco or "#2f7cf6", "#ffffff", 0.3)
+            cuerpo = _mezclar_hex("#2b2b2b", acento or color_marco or "#2f7cf6", 0.30)
+        elif encendido:
+            borde = color_marco or acento or "#2f7cf6"
+            base = "#2b2b2b"
+            cuerpo = _mezclar_hex(base, acento, 0.22) if acento else base
+        else:
+            borde = color_marco or "#4a4a4a"
+            cuerpo = "#1c1c1c"
+        if hover:
+            cuerpo = _mezclar_hex(cuerpo, "#ffffff", 0.08)
+        if presionado:
+            cuerpo = _mezclar_hex(cuerpo, "#000000", 0.25)
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle([S, S, W - S - 1, H - S - 1], radius=radio,
+                            fill=_hex_a_rgb(cuerpo) + (255,),
+                            outline=_hex_a_rgb(borde) + (255,), width=grosor)
+        foto = ImageTk.PhotoImage(img.resize((ancho, alto), Image.LANCZOS))
+    except Exception:
+        return None
+    if len(_cache_placas_modernas) > C.LIMITE_CACHE_PLACAS:
+        _cache_placas_modernas.clear()
+    _cache_placas_modernas[clave] = foto
+    return foto
 # Mismo truco que el '_S' de tu otro programa: Tk dibuja un
 # create_oval tal cual, sin suavizar el borde (se nota como
 # "escalones" sobre todo en botones chicos). Acá en cambio el círculo
@@ -560,7 +618,141 @@ def _crear_boton_circular(parent, texto, diametro, fuente_tam, color_fondo, coma
     return canvas
 
 
+_cache_circulo_blanco = {}
+
+
+def _imagen_circulo_blanco(radio):
+    """Perilla blanca con bordes suaves (supersampling + LANCZOS),
+    cacheada por radio. None sin Pillow (se usa óvalo de respaldo)."""
+    if not HAY_PILLOW:
+        return None
+    radio = max(4, int(radio))
+    if radio in _cache_circulo_blanco:
+        return _cache_circulo_blanco[radio]
+    try:
+        S = 4
+        lado = radio * 2 * S
+        img = Image.new("RGBA", (lado, lado), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.ellipse([S, S, lado - S - 1, lado - S - 1],
+                  fill=(242, 245, 250, 255), outline=(154, 164, 178, 255), width=S)
+        foto = ImageTk.PhotoImage(img.resize((radio * 2, radio * 2), Image.LANCZOS))
+        _cache_circulo_blanco[radio] = foto
+        return foto
+    except Exception:
+        return None
+
+
+def _color_mute(muted):
+    """Color del altavoz: rojo si muteado, o gris (más claro en Moderna)."""
+    if muted:
+        return "#ff5567"
+    return C.MOD_ICONO_APAGADO if E.es_moderna() else "#394151"
+
+
+def _color_monitor(tipo):
+    """Color del auricular según monitoreo (más claro el apagado en Moderna)."""
+    if tipo == "OBS_MONITORING_TYPE_NONE" and E.es_moderna():
+        return C.MOD_ICONO_APAGADO
+    return C.COLORES_MONITOREO.get(tipo, "#394151")
+
+
+_cache_emoji = {}
+
+
+def _rutas_fuentes_emoji():
+    import os as _os
+    if _os.name == "nt":
+        base = _os.environ.get("WINDIR", r"C:\Windows") + r"\Fonts"
+        return [base + "\\" + f for f in ("seguisym.ttf", "segoeui.ttf", "arial.ttf")]
+    return ["DejaVuSans.ttf"]
+
+
+def _imagen_emoji(texto, tam_px, color):
+    """El mismo emoji de siempre, pero rasterizado en grande con Pillow
+    y reducido con LANCZOS: mismo diseño, bordes suaves, teñido con el
+    color de estado. Cacheado. None sin Pillow (texto de respaldo)."""
+    if not HAY_PILLOW:
+        return None
+    tam_px = max(12, int(tam_px))
+    color = {"white": "#ffffff", "black": "#000000"}.get(color, color)
+    clave = (texto, tam_px, color)
+    if clave in _cache_emoji:
+        return _cache_emoji[clave]
+    try:
+        from PIL import ImageFont
+        S = 4
+        fuente = None
+        for ruta in _rutas_fuentes_emoji():
+            try:
+                candidata = ImageFont.truetype(ruta, tam_px * S)
+                if candidata.getmask(texto).getbbox():
+                    fuente = candidata
+                    break
+            except Exception:
+                continue
+        if fuente is None:
+            return None
+        # Se dibuja en la caja del em y se recorta por lo que SALIÓ
+        # (no por la caja de la máscara, que en estas fuentes queda
+        # más chica y cortaba el glifo por abajo).
+        em = tam_px * S
+        img = Image.new("RGBA", (em, em), (0, 0, 0, 0))
+        ImageDraw.Draw(img).text((0, 0), texto, font=fuente, anchor="lt",
+                                 fill=_hex_a_rgb(color) + (255,))
+        bb = img.getbbox()
+        if not bb:
+            return None
+        pad = max(2, tam_px * S // 16)
+        img = img.crop((max(0, bb[0] - pad), max(0, bb[1] - pad),
+                        min(em, bb[2] + pad), min(em, bb[3] + pad)))
+        w, h = img.size
+        lado = max(w, h)
+        lienzo = Image.new("RGBA", (lado, lado), (0, 0, 0, 0))
+        lienzo.paste(img, ((lado - w) // 2, (lado - h) // 2), img)
+        foto = ImageTk.PhotoImage(lienzo.resize((tam_px, tam_px), Image.LANCZOS))
+    except Exception:
+        return None
+    if len(_cache_emoji) > 200:
+        _cache_emoji.clear()
+    _cache_emoji[clave] = foto
+    return foto
+
+
+def _repintar_icono_plano(etiqueta):
+    foto = _imagen_emoji(etiqueta.texto_icono, etiqueta.tam_icono, etiqueta.color_icono)
+    if foto is not None:
+        etiqueta.imagen_icono = foto
+        etiqueta.config(image=foto)
+    else:
+        etiqueta.config(image="", text=etiqueta.texto_icono)
+
+
+def _crear_icono_plano(parent, texto, fuente_tam, color, comando):
+    """Ícono solo (sin círculo detrás) para el tema Moderna: una etiqueta
+    clickeable cuyo color marca el estado. Dibuja el ícono en vectorial
+    (sin pixelado) o cae al emoji de texto sin Pillow. Compatible con
+    _actualizar_boton_circular (texto/color)."""
+    etiqueta = tk.Label(parent, bg=parent["bg"], cursor="hand2")
+    etiqueta.es_plano = True
+    etiqueta.texto_icono = texto
+    etiqueta.tam_icono = max(12, int(fuente_tam + 2))
+    etiqueta.color_icono = color
+    etiqueta.bind("<Button-1>", lambda _e: comando())
+    _repintar_icono_plano(etiqueta)
+    if not HAY_PILLOW:
+        etiqueta.config(font=(E.FUENTE_EMOJI, fuente_tam))
+    return etiqueta
+
+
 def _actualizar_boton_circular(canvas, texto_nuevo=None, color_nuevo=None):
+    if getattr(canvas, "es_plano", False):
+        if texto_nuevo in ("🔇", "🔊", "🎧"):
+            canvas.texto_icono = texto_nuevo
+        if color_nuevo is not None:
+            canvas.color_icono = color_nuevo
+        _repintar_icono_plano(canvas)
+        return
     datos = canvas.datos_boton
     if texto_nuevo is not None and datos.get("texto") is not None:
         canvas.itemconfig(datos["texto"], text=texto_nuevo)

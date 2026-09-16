@@ -17,6 +17,88 @@ from consola_obs.ui import medidores as mod_ui_medidores
 from consola_obs.ui import ventana as mod_ui_ventana
 
 
+class _FaderOBS:
+    """Fader vertical estilo OBS (tema Moderna): pista oscura, relleno
+    azul y perilla circular blanca. Misma interfaz mínima que el
+    tk.Scale que reemplaza (get/set/pack/bind), para que el resto del
+    programa no cambie."""
+    ANCHO = 30
+    RADIO_PERILLA = 9
+
+    def __init__(self, parent, alto, bg, al_cambiar):
+        self.alto = max(60, int(alto))
+        self.al_cambiar = al_cambiar
+        self._db = -60.0
+        # Margen para que la perilla nunca se corte en los extremos.
+        self._margen = self.RADIO_PERILLA + 3
+        self.canvas = tk.Canvas(parent, width=self.ANCHO, height=self.alto,
+                                bg=bg, highlightthickness=0, cursor="hand2")
+        cx = self.ANCHO / 2
+        self._cx = cx
+        m = self._margen
+        self.canvas.create_rectangle(cx - 3, m, cx + 3, self.alto - m,
+                                     fill="#2a3342", outline="")
+        self.id_fill = self.canvas.create_rectangle(
+            cx - 3, self.alto - m, cx + 3, self.alto - m,
+            fill="#2f7cf6", outline="")
+        r = self.RADIO_PERILLA
+        foto = mod_ui_dibujo._imagen_circulo_blanco(r)
+        if foto is not None:
+            self.canvas.imagen_perilla = foto
+            self.id_handle = self.canvas.create_image(cx, self.alto - m, image=foto)
+            self._handle_es_foto = True
+        else:
+            self.id_handle = self.canvas.create_oval(
+                cx - r, self.alto - m - r, cx + r, self.alto - m + r,
+                fill="#f2f5fa", outline="#9aa4b2")
+            self._handle_es_foto = False
+        self.canvas.bind("<ButtonPress-1>", self._al_arrastrar)
+        self.canvas.bind("<B1-Motion>", self._al_arrastrar)
+
+    def _recorrido(self):
+        return max(1, self.alto - 2 * self._margen)
+
+    def _y_de_db(self, db):
+        db = max(-60.0, min(0.0, db))
+        return self._margen + (-db / 60.0) * self._recorrido()
+
+    def _db_de_y(self, y):
+        t = (max(self._margen, min(self.alto - self._margen, y)) - self._margen) / self._recorrido()
+        return round(max(-60.0, min(0.0, -t * 60.0)) * 2) / 2
+
+    def set(self, db):
+        try:
+            self._db = max(-60.0, min(0.0, float(db)))
+        except Exception:
+            self._db = -60.0
+        self._repintar()
+
+    def get(self):
+        return self._db
+
+    def pack(self, *args, **kwargs):
+        return self.canvas.pack(*args, **kwargs)
+
+    def bind(self, *args, **kwargs):
+        return self.canvas.bind(*args, **kwargs)
+
+    def _repintar(self):
+        y = self._y_de_db(self._db)
+        r = self.RADIO_PERILLA
+        self.canvas.coords(self.id_fill, self._cx - 3, y, self._cx + 3, self.alto - self._margen)
+        if self._handle_es_foto:
+            self.canvas.coords(self.id_handle, self._cx, y)
+        else:
+            self.canvas.coords(self.id_handle, self._cx - r, y - r, self._cx + r, y + r)
+
+    def _al_arrastrar(self, event):
+        self.set(self._db_de_y(event.y))
+        try:
+            self.al_cambiar(self._db)
+        except Exception:
+            pass
+
+
 def _ancho_preferido_fuente():
     """Ancho 'de catálogo' (mínimo) de una tarjeta de fuente, según el
     tamaño de ícono elegido (Chico/Mediano/Grande) y el factor de escala
@@ -136,6 +218,11 @@ def _reubicar_fuentes(forzar=False):
     E._ultima_grilla_fuentes["clave"] = (columnas, ancho_celda)
     for idx, nombre in enumerate(E.orden_fuentes):
         if nombre not in E.fuentes:
+            continue
+        try:
+            if not E.fuentes[nombre]["tarjeta_sombra"].winfo_exists():
+                continue
+        except Exception:
             continue
         fila = idx // columnas
         col = idx % columnas
@@ -262,16 +349,28 @@ def crear_fader_fuente(nombre, vol_db, muted, tipo_monitor, nombre_visible=None)
     alto_contenedor = medida_icono["fuente_alto"]
 
     color_etiqueta = E.colores_fuentes.get(nombre)
-    color_cabecera_base = color_etiqueta or "#3d4d66"
-    color_cuerpo = mod_ui_dibujo._oscurecer_color_pct(color_etiqueta, 0.42) if color_etiqueta else "#202633"
-    color_meta = mod_ui_dibujo._oscurecer_color_pct(color_etiqueta, 0.30) if color_etiqueta else "#141a26"
+    if E.es_moderna():
+        if color_etiqueta:
+            _base_suave = mod_ui_dibujo._desaturar_color(color_etiqueta)
+            color_cabecera_base = _base_suave
+            color_cuerpo = mod_ui_dibujo._oscurecer_color_pct(_base_suave, 0.50)
+            color_meta = mod_ui_dibujo._oscurecer_color_pct(_base_suave, 0.35)
+        else:
+            color_cabecera_base = C.MOD_CABECERA
+            color_cuerpo = C.MOD_TARJETA
+            color_meta = C.MOD_FONDO
+    else:
+        color_cabecera_base = color_etiqueta or "#3d4d66"
+        color_cuerpo = mod_ui_dibujo._oscurecer_color_pct(color_etiqueta, 0.42) if color_etiqueta else "#202633"
+        color_meta = mod_ui_dibujo._oscurecer_color_pct(color_etiqueta, 0.30) if color_etiqueta else "#141a26"
 
     es_principal_inicial = nombre in E.fuentes_principales
-    color_borde = C.COLOR_BORDE_PRINCIPAL if es_principal_inicial else "#0e1219"
+    color_borde_principal = C.MOD_ACENTO if E.es_moderna() else C.COLOR_BORDE_PRINCIPAL
+    color_borde = color_borde_principal if es_principal_inicial else "#0e1219"
     grosor_borde = 3 if es_principal_inicial else 2
 
     tarjeta_sombra = tk.Canvas(
-        E.panel_fuentes, bg="#10141b",
+        E.panel_fuentes, bg=E.color_fondo_panel(),
         width=ancho_contenedor + 18, height=alto_contenedor + 18,
         highlightthickness=0
     )
@@ -352,6 +451,9 @@ def crear_fader_fuente(nombre, vol_db, muted, tipo_monitor, nombre_visible=None)
         cx, cy = ancho_cab / 2, alto_cab / 2
         cv.coords(id_sombra, cx + 1, cy + 2)
         cv.coords(id_nombre, cx, cy + 1)
+        if E.es_moderna():
+            # Cabecera lisa en Moderna (sin degradado): sólo se centra el texto.
+            return
         if E._modo_super.get("activo"):
             # En modo super el texto se recentra pero las bandas no se
             # tocan: se repintan todas juntas al salir del modo.
@@ -397,11 +499,13 @@ def crear_fader_fuente(nombre, vol_db, muted, tipo_monitor, nombre_visible=None)
     contenedor.nombre_fuente = nombre
     contenedor.bind("<Button-3>", lambda e: _abrir_menu_contextual_fuente(nombre, e))
 
+    col_db_activo = C.MOD_TEXTO if E.es_moderna() else "#2fd693"
+    col_db_silencio = C.MOD_APAGADO if E.es_moderna() else "#828da6"
     etiqueta_db = tk.Label(
         contenedor,
         text="SILENCIO" if vol_db <= E.UMBRAL_SILENCIO else f"{vol_db:.1f} dB",
         bg=color_cuerpo,
-        fg="#2fd693",
+        fg=col_db_silencio if vol_db <= E.UMBRAL_SILENCIO else col_db_activo,
         font=(E.FUENTE_UI, 10, "bold")
     )
     etiqueta_db.pack(pady=(5, 2))
@@ -420,39 +524,48 @@ def crear_fader_fuente(nombre, vol_db, muted, tipo_monitor, nombre_visible=None)
     _fuente_marcas_db = tkfont.Font(family=E.FUENTE_UI, size=6)
     margen_marcas_db = math.ceil(_fuente_marcas_db.metrics("linespace") / 2) + 1
 
-    vu_canvas = tk.Canvas(
-        fila_vertical, width=ancho_barra_vu + 16, height=alto_canal + margen_marcas_db * 2,
-        bg="#0e1219", highlightthickness=0
-    )
-    vu_canvas.pack(side="left", anchor="n")
+    tam_marcas_db = 6
+    if E.es_moderna():
+        # Números dB más grandes: se mide el ancho real que necesitan y
+        # se agranda el canvas para que no se corten; si no entran en
+        # la tarjeta se vuelve al tamaño chico.
+        tam_marcas_db = 7
+        _f_marcas = tkfont.Font(family=E.FUENTE_UI, size=tam_marcas_db)
+        ancho_marcas = max(_f_marcas.measure(str(m)) for m in mod_ui_medidores.MARCAS_DB_OBS) + 5
+        if ancho_barra_vu + ancho_marcas + 4 + _FaderOBS.ANCHO > ancho_contenedor - 6:
+            tam_marcas_db = 6
+            _f_marcas = tkfont.Font(family=E.FUENTE_UI, size=tam_marcas_db)
+            ancho_marcas = max(_f_marcas.measure(str(m)) for m in mod_ui_medidores.MARCAS_DB_OBS) + 5
+        margen_marcas_db = math.ceil(_f_marcas.metrics("linespace") / 2) + 1
+        vu_canvas = tk.Canvas(
+            fila_vertical, width=ancho_barra_vu + ancho_marcas,
+            height=alto_canal + margen_marcas_db * 2,
+            bg=color_cuerpo, highlightthickness=0
+        )
+        vu_canvas.pack(side="left", anchor="n")
+        vu_obs = mod_ui_medidores._dibujar_barra_obs(
+            vu_canvas, ancho_barra_vu, alto_canal, bg=color_cuerpo, offset_y=margen_marcas_db)
+        vu_segmentos = []
+        marcas_db = mod_ui_medidores.MARCAS_DB_OBS
+        color_marcas = C.MOD_MARCA_DB
+    else:
+        vu_canvas = tk.Canvas(
+            fila_vertical, width=ancho_barra_vu + 16, height=alto_canal + margen_marcas_db * 2,
+            bg="#0e1219", highlightthickness=0
+        )
+        vu_canvas.pack(side="left", anchor="n")
+        vu_obs = None
+        vu_segmentos = mod_ui_medidores._dibujar_segmentos_led(vu_canvas, ancho_barra_vu, alto_canal, offset_y=margen_marcas_db)
+        marcas_db = E.MARCAS_DB
+        color_marcas = "#79859f"
 
-    vu_segmentos = mod_ui_medidores._dibujar_segmentos_led(vu_canvas, ancho_barra_vu, alto_canal, offset_y=margen_marcas_db)
-
-    for marca in E.MARCAS_DB:
+    for marca in marcas_db:
         y = mod_ui_medidores._y_para_db(marca, alto_canal) + margen_marcas_db
         vu_canvas.create_text(
             ancho_barra_vu + 3, y, text=str(marca),
-            fill="#79859f", font=(E.FUENTE_UI, 6), anchor="w"
+            fill=color_marcas, font=(E.FUENTE_UI, tam_marcas_db if E.es_moderna() else 6),
+            anchor="w"
         )
-
-    escala = tk.Scale(
-        fila_vertical,
-        from_=0,
-        to=-60,
-        resolution=0.5,
-        orient="vertical",
-        length=alto_canal,
-        width=14,
-        sliderlength=20,
-        showvalue=False,
-        bg="#2a3243",
-        fg="white",
-        troughcolor="#141a26",
-        highlightthickness=0,
-        activebackground="#4fe3ae"
-    )
-    escala.set(vol_db)
-    escala.pack(side="left", padx=(4, 0), pady=(margen_marcas_db, 0), anchor="n")
 
     def cambiar_volumen(valor):
         if not E.conectado:
@@ -461,14 +574,35 @@ def crear_fader_fuente(nombre, vol_db, muted, tipo_monitor, nombre_visible=None)
             db = float(valor)
             if db <= E.UMBRAL_SILENCIO:
                 E.cliente_obs.set_input_volume(nombre, vol_mul=0)
-                etiqueta_db.config(text="SILENCIO", fg="#828da6")
+                etiqueta_db.config(text="SILENCIO", fg=col_db_silencio)
             else:
                 E.cliente_obs.set_input_volume(nombre, vol_db=db)
-                etiqueta_db.config(text=f"{db:.1f} dB", fg="#2fd693")
+                etiqueta_db.config(text=f"{db:.1f} dB", fg=col_db_activo)
         except Exception as e:
             print(f"Error cambiando volumen de {nombre}: {e}")
 
-    escala.config(command=cambiar_volumen)
+    if E.es_moderna():
+        escala = _FaderOBS(fila_vertical, alto_canal, color_cuerpo, cambiar_volumen)
+    else:
+        escala = tk.Scale(
+            fila_vertical,
+            from_=0,
+            to=-60,
+            resolution=0.5,
+            orient="vertical",
+            length=alto_canal,
+            width=14,
+            sliderlength=20,
+            showvalue=False,
+            bg="#2a3243",
+            fg="white",
+            troughcolor="#141a26",
+            highlightthickness=0,
+            activebackground="#4fe3ae"
+        )
+        escala.config(command=cambiar_volumen)
+    escala.set(vol_db)
+    escala.pack(side="left", padx=(4, 0), pady=(margen_marcas_db, 0), anchor="n")
 
     escala.bind("<ButtonPress-1>", lambda e: E.fuentes[nombre].__setitem__("arrastrando", True))
     escala.bind("<ButtonRelease-1>", lambda e: E.fuentes[nombre].__setitem__("arrastrando", False))
@@ -477,25 +611,44 @@ def crear_fader_fuente(nombre, vol_db, muted, tipo_monitor, nombre_visible=None)
     fila_iconos = tk.Frame(contenedor, bg=color_cuerpo)
     fila_iconos.pack(pady=(5, 5))
 
-    boton_mute = mod_ui_dibujo._crear_boton_circular(
-        fila_iconos,
-        "🔇" if muted else "🔊",
-        medida_icono["diametro_boton"],
-        medida_icono["fuente_boton"],
-        "#ff5567" if muted else "#394151",
-        lambda: cambiar_mute(nombre)
-    )
-    boton_mute.pack(side="left", padx=6)
+    if E.es_moderna():
+        boton_mute = mod_ui_dibujo._crear_icono_plano(
+            fila_iconos,
+            "🔇" if muted else "🔊",
+            medida_icono["fuente_boton"] + 4,
+            mod_ui_dibujo._color_mute(muted),
+            lambda: cambiar_mute(nombre)
+        )
+        boton_mute.pack(side="left", padx=6)
 
-    boton_monitor = mod_ui_dibujo._crear_boton_circular(
-        fila_iconos,
-        "🎧",
-        medida_icono["diametro_boton"],
-        medida_icono["fuente_boton"],
-        C.COLORES_MONITOREO.get(tipo_monitor, "#394151"),
-        lambda: cambiar_monitor(nombre)
-    )
-    boton_monitor.pack(side="left", padx=6)
+        boton_monitor = mod_ui_dibujo._crear_icono_plano(
+            fila_iconos,
+            "🎧",
+            medida_icono["fuente_boton"] + 4,
+            mod_ui_dibujo._color_monitor(tipo_monitor),
+            lambda: cambiar_monitor(nombre)
+        )
+        boton_monitor.pack(side="left", padx=6)
+    else:
+        boton_mute = mod_ui_dibujo._crear_boton_circular(
+            fila_iconos,
+            "🔇" if muted else "🔊",
+            medida_icono["diametro_boton"],
+            medida_icono["fuente_boton"],
+            "#ff5567" if muted else "#394151",
+            lambda: cambiar_mute(nombre)
+        )
+        boton_mute.pack(side="left", padx=6)
+
+        boton_monitor = mod_ui_dibujo._crear_boton_circular(
+            fila_iconos,
+            "🎧",
+            medida_icono["diametro_boton"],
+            medida_icono["fuente_boton"],
+            C.COLORES_MONITOREO.get(tipo_monitor, "#394151"),
+            lambda: cambiar_monitor(nombre)
+        )
+        boton_monitor.pack(side="left", padx=6)
 
     def _abrir_menu_monitor(evento, n=nombre):
         _menu_monitor(n, evento)
@@ -519,6 +672,7 @@ def crear_fader_fuente(nombre, vol_db, muted, tipo_monitor, nombre_visible=None)
         "monitor": boton_monitor,
         "vu_canvas": vu_canvas,
         "vu_segmentos": vu_segmentos,
+        "vu_obs": vu_obs,
         "vu_alto": alto_canal,
         "vu_visual_db": -60.0,                                                              
         "muted": muted,
@@ -577,6 +731,17 @@ def _actualizar_estado_gris(nombre):
         color_texto = "#202633"
         color_cuerpo = mod_ui_dibujo._oscurecer_color_pct(C.COLOR_GRIS_ATENUADO, 0.42)
         color_meta = mod_ui_dibujo._oscurecer_color_pct(C.COLOR_GRIS_ATENUADO, 0.30)
+    elif E.es_moderna():
+        if color_etiqueta:
+            _base_suave = mod_ui_dibujo._desaturar_color(color_etiqueta)
+            color_cabecera = _base_suave
+            color_cuerpo = mod_ui_dibujo._oscurecer_color_pct(_base_suave, 0.50)
+            color_meta = mod_ui_dibujo._oscurecer_color_pct(_base_suave, 0.35)
+        else:
+            color_cabecera = C.MOD_CABECERA
+            color_cuerpo = C.MOD_TARJETA
+            color_meta = C.MOD_FONDO
+        color_texto = C.MOD_TEXTO
     else:
         color_cabecera = color_etiqueta or "#3d4d66"
         color_texto = "white"
@@ -594,14 +759,37 @@ def _actualizar_estado_gris(nombre):
 
     widgets["contenedor"].config(
         bg=color_cuerpo,
-        highlightbackground=(C.COLOR_BORDE_PRINCIPAL if es_principal else "#0e1219"),
+        highlightbackground=((C.MOD_ACENTO if E.es_moderna() else C.COLOR_BORDE_PRINCIPAL) if es_principal else "#0e1219"),
         highlightthickness=(3 if es_principal else 2)
     )
     widgets["db"].config(bg=color_cuerpo)
     widgets["fila_vertical"].config(bg=color_cuerpo)
     widgets["fila_iconos"].config(bg=color_cuerpo)
+    # El fader acompaña el color del cuerpo (Tk no tiene fondo
+    # transparente): así no queda un recuadro de otro color.
+    try:
+        fader = widgets.get("fader")
+        if isinstance(fader, _FaderOBS):
+            fader.canvas.config(bg=color_cuerpo)
+        elif fader is not None:
+            fader.config(bg=color_cuerpo)
+    except Exception:
+        pass
+    # El medidor también sigue al fondo actual (misma propiedad que el
+    # fader): fondo y máscara se tiñen con el color del cuerpo.
+    try:
+        dib = widgets.get("vu_obs")
+        if dib:
+            widgets["vu_canvas"].config(bg=color_cuerpo)
+            widgets["vu_canvas"].itemconfig(dib["id_fondo"], fill=color_cuerpo)
+            widgets["vu_canvas"].itemconfig(dib["id_mascara"], fill=color_cuerpo)
+            dib["bg"] = color_cuerpo
+    except Exception:
+        pass
     for hijo in widgets["fila_iconos"].winfo_children():
         if isinstance(hijo, tk.Canvas):
+            hijo.config(bg=color_cuerpo)
+        elif getattr(hijo, "es_plano", False):
             hijo.config(bg=color_cuerpo)
 
     widgets["fila_meta"].config(bg=color_meta)
@@ -666,7 +854,9 @@ def _resaltar_destino_fuente(nombre_nuevo):
     if anterior is not None and anterior in E.fuentes:
         _actualizar_estado_gris(anterior)
     if nombre_nuevo is not None and nombre_nuevo in E.fuentes:
-        E.fuentes[nombre_nuevo]["contenedor"].config(highlightbackground="#2fd693", highlightthickness=3)
+        E.fuentes[nombre_nuevo]["contenedor"].config(
+            highlightbackground=C.MOD_ACENTO if E.es_moderna() else "#2fd693",
+            highlightthickness=3)
     E._arrastre_fuente["destino_resaltado"] = nombre_nuevo
 
 
@@ -775,21 +965,21 @@ def sincronizar_fuente(nombre, vol_db, muted, tipo_monitor):
 
     widgets["fader"].set(vol_db)
     if vol_db <= E.UMBRAL_SILENCIO:
-        widgets["db"].config(text="SILENCIO", fg="#828da6")
+        widgets["db"].config(text="SILENCIO", fg=C.MOD_APAGADO if E.es_moderna() else "#828da6")
     else:
-        widgets["db"].config(text=f"{vol_db:.1f} dB", fg="#2fd693")
+        widgets["db"].config(text=f"{vol_db:.1f} dB", fg=C.MOD_TEXTO if E.es_moderna() else "#2fd693")
 
     widgets["muted"] = muted
     mod_ui_dibujo._actualizar_boton_circular(
         widgets["mute"],
         texto_nuevo=("🔇" if muted else "🔊"),
-        color_nuevo=("#ff5567" if muted else "#394151")
+        color_nuevo=mod_ui_dibujo._color_mute(muted)
     )
 
     widgets["tipo_monitor"] = tipo_monitor
     mod_ui_dibujo._actualizar_boton_circular(
         widgets["monitor"],
-        color_nuevo=C.COLORES_MONITOREO.get(tipo_monitor, "#394151")
+        color_nuevo=mod_ui_dibujo._color_monitor(tipo_monitor)
     )
 
     _actualizar_estado_gris(nombre)
@@ -807,7 +997,7 @@ def cambiar_mute(nombre):
         mod_ui_dibujo._actualizar_boton_circular(
             widgets["mute"],
             texto_nuevo=("🔇" if nuevo_estado else "🔊"),
-            color_nuevo=("#ff5567" if nuevo_estado else "#394151")
+            color_nuevo=mod_ui_dibujo._color_mute(nuevo_estado)
         )
         _actualizar_estado_gris(nombre)
     except Exception as e:
@@ -826,7 +1016,7 @@ def _fijar_monitor(nombre, tipo):
         widgets = E.fuentes[nombre]
         widgets["tipo_monitor"] = tipo
         mod_ui_dibujo._actualizar_boton_circular(
-            widgets["monitor"], color_nuevo=C.COLORES_MONITOREO[tipo])
+            widgets["monitor"], color_nuevo=mod_ui_dibujo._color_monitor(tipo))
     except Exception as e:
         print(f"Error cambiando monitoreo de {nombre}: {e}")
 

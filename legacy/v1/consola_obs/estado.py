@@ -107,6 +107,48 @@ _imagenes_decodificadas_cache = {}
 
 tamano_icono_actual = C.TAMANO_ICONO_POR_DEFECTO
 
+# Interfaz visual: "Profesional" (la de siempre) o "Moderna" (estilo
+# OBS). Sólo cambia lo visual; la funcionalidad es la misma.
+TEMAS_INTERFAZ = ("Profesional", "Moderna")
+tema_interfaz = "Profesional"
+
+
+def es_moderna():
+    return tema_interfaz == "Moderna"
+
+
+def color_fondo_panel():
+    """Fondo de paneles según el tema (más oscuro en Moderna)."""
+    return C.MOD_FONDO if es_moderna() else "#10141b"
+
+
+def color_barra_titulo():
+    """Barra de títulos de panel según el tema."""
+    return C.MOD_CABECERA if es_moderna() else "#151a24"
+
+
+def color_cabecera_arriba():
+    """Fondo superior de la barra principal (gris oscuro en Moderna)."""
+    return "#2b2b2b" if es_moderna() else "#1c2637"
+
+
+def color_cabecera_abajo():
+    """Fondo inferior de la barra principal (gris oscuro en Moderna)."""
+    return "#1c1c1c" if es_moderna() else "#0c111b"
+
+
+def color_acento():
+    """Acento principal: verde de siempre, azul en Moderna."""
+    return C.MOD_ACENTO if es_moderna() else "#2fd693"
+
+
+def color_acento_oscuro():
+    return C.MOD_ACENTO_OSCURO if es_moderna() else "#17b8b0"
+
+
+def color_acento_claro():
+    return C.MOD_ACENTO_CLARO if es_moderna() else "#4fe3ae"
+
 orientacion_paneles = "vertical"                                             
 orden_paneles = ["fuentes", "soundboard"]                          
 

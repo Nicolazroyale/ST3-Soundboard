@@ -276,3 +276,55 @@ COLOR_PANEL_SOUNDBOARD = "#10141b"
 # en vez de reaccionar a cada posición intermedia (infinitas), se responde
 # cada ~32px (unas 30 posiciones en un arrastre típico) para no saturar.
 SALTO_MINIMO_REDIBUJO_PX = 32
+
+
+# Tema "Moderna" (estilo OBS): grises oscuros con acento azul.
+MOD_FONDO = "#141414"
+MOD_TARJETA = "#1f1f1f"
+MOD_CABECERA = "#262626"
+MOD_TEXTO = "#ededed"
+MOD_APAGADO = "#8a8a8a"
+MOD_MARCA_DB = "#7a7a7a"
+MOD_PICO = "#f5f5f5"
+MOD_PICO_GRIS = "#a3a3a3"
+MOD_CLIP = "#ff2441"
+MOD_BARRA_FONDO = "#0a0a0a"
+MOD_ICONO_APAGADO = "#b5b5b5"
+MOD_ACENTO = "#2f7cf6"
+MOD_ACENTO_OSCURO = "#1f5fd0"
+MOD_ACENTO_CLARO = "#7aa8ff"
+
+# ------------------------------------------------------------
+# BARRA MODERNA: EDITABLE
+# ------------------------------------------------------------
+# Color de cada zona con RGB directo (0-255 cada uno), igual que la guía:
+# "alta" (arriba), "media" (medio), "baja" (abajo). El clip de saturación
+# siempre es rojo; el gris de mute se edita en BARRA_MODERNA_GRIS.
+# Ejemplos para copiar y pegar:
+#   Verde   = {"alta": (255, 59, 48), "media": (242, 196, 100), "baja": (47, 214, 147)}
+#   Azul    = {"alta": (156, 192, 255), "media": (47, 124, 246), "baja": (23, 74, 148)}
+#   Naranja = {"alta": (255, 82, 48), "media": (246, 164, 47), "baja": (180, 110, 20)}
+#   Violeta = {"alta": (255, 120, 200), "media": (170, 120, 250), "baja": (100, 70, 180)}
+BARRA_MODERNA = {"alta": (227, 59, 87), "media": (229, 175, 36), "baja": (55, 210, 71)}
+# Degradado en dB (ancho de mezcla del borde alto y del borde medio):
+# (0.0, 0.0) = cortes duros; (1.5, 2.0) = sutil; (6.0, 10.0) = suave.
+BARRA_MODERNA_MEZCLA = (1.5, 2.0)
+# Gris de la barra (mute/otra escena), también con RGB directo.
+# OJO: las claves acá son alta/media/baja (igual que BARRA_MODERNA).
+BARRA_MODERNA_GRIS = {"alta": (180, 180, 180), "media": (210, 210, 210), "baja": (210, 210, 210)}
+
+# ------------------------------------------------------------
+# GUÍA DEL MEDIDOR (tema Moderna): EDITABLE
+# ------------------------------------------------------------
+# Son los colores apagados que se ven ARRIBA del nivel como guía.
+# Poné acá los RGB que quieras (0-255 cada uno): cuanto más cerca del
+# fondo (8, 11, 16), menos se nota. La guía en gris (mute/otra escena)
+# usa la segunda paleta.
+GUIA_BARRA_COLOR = {
+    "rojo": (125, 18, 26), "amarillo": (110, 82, 13), "verde": (23, 100, 30),
+}
+# OJO: las claves de la guía son rojo/amarillo/verde (las 3 zonas
+# vistas como colores, igual que GUIA_BARRA_COLOR de arriba).
+GUIA_BARRA_GRIS = {
+    "rojo": (65, 65, 65), "amarillo": (130, 130, 130), "verde": (100, 100, 100),
+}

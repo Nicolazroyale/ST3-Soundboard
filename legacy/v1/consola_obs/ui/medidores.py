@@ -98,17 +98,233 @@ def _y_para_db(db, alto=C.ALTO_CANAL):
     return (-db / 60.0) * alto
 
 
+# Escala del medidor estilo OBS (tema Moderna).
+MARCAS_DB_OBS = [0, -6, -12, -18, -24, -30, -36, -48, -60]
+
+_cache_barra_obs = {}
+
+
+def _mezclar_rgb(c1, c2, t):
+    return tuple(round(a + (b - a) * t) for a, b in zip(c1, c2))
+
+
+# Color y degradado de la barra se editan en constantes.py
+# (BARRA_MODERNA / BARRA_MODERNA_MEZCLA). El clip de saturación siempre
+# es rojo (gris claro en variante gris).
+_BARRA_MODERNA_DEFECTO = {"alta": (255, 59, 48), "media": (242, 196, 100), "baja": (47, 214, 147)}
+# Gris funcional (mute/otra escena): editable en constantes.py
+# (BARRA_MODERNA_GRIS), con los mismos valores por defecto.
+_PALETA_BARRA_GRIS_DEFECTO = {
+    "rojo": (232, 235, 242), "amarillo": (154, 164, 178), "verde": (91, 100, 120),
+}
+
+
+def _gris_barra_actual():
+    return _normalizar_paleta(getattr(C, "BARRA_MODERNA_GRIS", None),
+                              _PALETA_BARRA_GRIS_DEFECTO)
+
+
+def _rgb_valido(v):
+    return (isinstance(v, (tuple, list)) and len(v) == 3
+            and all(isinstance(x, (int, float)) and 0 <= x <= 255 for x in v))
+
+
+_EQUIV_ZONAS = {"alta": "rojo", "media": "amarillo", "baja": "verde",
+                "rojo": "rojo", "amarillo": "amarillo", "verde": "verde"}
+
+
+def _normalizar_paleta(d, defecto):
+    """Lee una paleta aceptando claves alta/media/baja O
+    rojo/amarillo/verde (para que un desliz editando no la rompa en
+    silencio): devuelve siempre claves rojo/amarillo/verde válidas."""
+    out = {}
+    for clave in ("rojo", "amarillo", "verde"):
+        v = None
+        if isinstance(d, dict):
+            for k, std in _EQUIV_ZONAS.items():
+                if std == clave and k in d:
+                    v = d[k]
+                    break
+        out[clave] = tuple(int(x) for x in v) if _rgb_valido(v) else defecto[clave]
+    return out
+
+
+def _esquema_barra_actual():
+    normalizado = _normalizar_paleta(getattr(C, "BARRA_MODERNA", None),
+                                     {"rojo": (255, 59, 48), "amarillo": (242, 196, 100),
+                                      "verde": (47, 214, 147)})
+    return {"alta": normalizado["rojo"], "media": normalizado["amarillo"],
+            "baja": normalizado["verde"]}
+
+
+def _mezcla_degradado_actual():
+    try:
+        m = getattr(C, "BARRA_MODERNA_MEZCLA", None)
+        m1, m2 = float(m[0]), float(m[1])
+        if m1 >= 0 and m2 >= 0:
+            return (m1, m2)
+    except Exception:
+        pass
+    return (1.5, 2.0)
+_PALETA_BARRA_COLOR_TENUE = C.GUIA_BARRA_COLOR
+_PALETA_BARRA_GRIS_TENUE = C.GUIA_BARRA_GRIS
+_GUIA_DEFECTO = {"rojo": (9, 7, 6), "amarillo": (9, 8, 6), "verde": (7, 10, 8)}
+
+
+def _color_zona_barra(db, paleta, mezcla=(1.5, 2.0)):
+    """Color para un dB dado. `mezcla` = (ancho1, ancho2) en dB de los
+    degradados entre zonas; (0, 0) son cortes duros."""
+    m1, m2 = mezcla
+    if db >= -9.0:
+        return paleta["rojo"]
+    if m1 > 0 and db >= -9.0 - m1:
+        return _mezclar_rgb(paleta["amarillo"], paleta["rojo"], (db + 9.0 + m1) / m1)
+    if db >= -18.5:
+        return paleta["amarillo"]
+    if m2 > 0 and db >= -18.5 - m2:
+        return _mezclar_rgb(paleta["verde"], paleta["amarillo"], (db + 18.5 + m2) / m2)
+    return paleta["verde"]
+
+
+def _imagen_barra_obs(ancho, alto, gris=False, tenue=False):
+    """Tira vertical de la GUÍA de fondo (colores oscuros, editables en
+    constantes.py), cacheada por tamaño. None sin Pillow."""
+    try:
+        from consola_obs.compat import HAY_PILLOW, Image, ImageTk
+    except Exception:
+        return None
+    if not HAY_PILLOW:
+        return None
+    clave = (ancho, alto, gris, tenue)
+    if clave in _cache_barra_obs:
+        return _cache_barra_obs[clave]
+    try:
+        paleta = _normalizar_paleta(
+            _PALETA_BARRA_GRIS_TENUE if gris else _PALETA_BARRA_COLOR_TENUE, _GUIA_DEFECTO)
+        ancho, alto = max(2, int(ancho)), max(2, int(alto))
+        tira = Image.new("RGB", (1, alto))
+        px = tira.load()
+        for y in range(alto):
+            db = -(y / max(1, alto - 1)) * 60.0
+            px[0, y] = _color_zona_barra(db, paleta)
+        foto = ImageTk.PhotoImage(tira.resize((ancho, alto)))
+        _cache_barra_obs[clave] = foto
+        return foto
+    except Exception:
+        return None
+
+
+def _dibujar_barra_obs(canvas, ancho_barra, alto, bg="#080b10", offset_y=0):
+    """Barra de nivel continua estilo OBS: fondo con guía tenue SÓLIDA
+    (sin puntos) y, encima, una fila por píxel con el degradado
+    brillante que se muestra/oculta hasta el nivel. Más línea de pico
+    y testigo de clip rojo. Devuelve el dict de ids."""
+    x0, x1 = 1, max(2, ancho_barra - 1)
+    y0, y1 = offset_y, offset_y + alto
+    canvas.create_rectangle(x0, y0, x1, y1, fill=bg, outline="")
+    id_img_tenue = id_img = None
+    foto_tenue = _imagen_barra_obs(x1 - x0, alto, gris=False, tenue=True)
+    if foto_tenue is not None:
+        canvas.imagen_barra_obs_tenue = foto_tenue
+        id_img_tenue = canvas.create_image(x0, y0, anchor="nw", image=foto_tenue)
+    colores = []
+    colores_gris = []
+    esquema = _esquema_barra_actual()
+    paleta = {"rojo": esquema["alta"], "amarillo": esquema["media"], "verde": esquema["baja"]}
+    gris_cfg = _gris_barra_actual()
+    mezcla = _mezcla_degradado_actual()
+    for i in range(alto):
+        db = -(i / max(1, alto - 1)) * 60.0
+        colores.append("#%02x%02x%02x" % _color_zona_barra(db, paleta, mezcla))
+        colores_gris.append("#%02x%02x%02x" % _color_zona_barra(db, gris_cfg, mezcla))
+    id_filas = []
+    for i in range(alto):
+        id_filas.append(canvas.create_rectangle(
+            x0, y0 + i, x1, y0 + i + 1, fill=colores[i], outline="", state="hidden"))
+    id_barra = None
+    id_clip = canvas.create_rectangle(x0, y0, x1, y0 + 3, fill=C.MOD_CLIP, outline="", state="hidden")
+    id_pico = canvas.create_line(x0, y1, x1, y1, fill=C.MOD_PICO, width=2)
+    id_borde = canvas.create_rectangle(x0, y0, x1, y1, fill="", outline="#0a1830", width=1)
+    return {"x0": x0, "x1": x1, "y0": y0, "y1": y1, "alto": alto,
+            "bg": bg, "id_img": id_img, "id_img_tenue": id_img_tenue,
+            "id_barra": id_barra, "id_filas": id_filas,
+            "colores": colores, "colores_gris": colores_gris,
+            "id_clip": id_clip, "id_pico": id_pico, "id_borde": id_borde,
+            "gris": False}
+
+
+def _actualizar_barra_obs(canvas, dib, db_visual, db_pico, atenuado=False, saturado=False, estado=None):
+    """Muestra las filas hasta el nivel, el pico en su marca y, si
+    satura, tiñe de rojo (gris claro en variante gris) todo el tramo
+    visible, como el aviso de clipping del otro diseño. En gris
+    (mute/otra escena) filas y guía usan los tonos grises. Sólo toca
+    las filas que cambian."""
+    if not dib:
+        return
+    alto = dib["alto"]
+    y_nivel = int(round(_y_para_db(db_visual, alto)))
+    y_pico = int(round(_y_para_db(db_pico, alto)))
+    actual = (y_nivel, y_pico, saturado, atenuado)
+    anterior = estado.get("ultimo") if estado is not None else None
+    if anterior == actual:
+        return
+    if estado is not None:
+        estado["ultimo"] = actual
+    filas = dib.get("id_filas") or []
+    if atenuado != dib.get("gris"):
+        colores = dib["colores_gris"] if atenuado else dib["colores"]
+        sat_fill = C.COLOR_LED_SATURADO_GRIS if atenuado else C.MOD_CLIP
+        for i, iid in enumerate(filas):
+            if saturado and i >= y_nivel:
+                canvas.itemconfig(iid, fill=sat_fill)
+            else:
+                canvas.itemconfig(iid, fill=colores[i])
+        foto_tenue = _imagen_barra_obs(dib["x1"] - dib["x0"], alto,
+                                       gris=atenuado, tenue=True)
+        if foto_tenue is not None and dib.get("id_img_tenue") is not None:
+            canvas.imagen_barra_obs_tenue = foto_tenue
+            canvas.itemconfig(dib["id_img_tenue"], image=foto_tenue)
+        dib["gris"] = atenuado
+    # Filas visibles: desde y_nivel hasta abajo. Sólo flippean las que
+    # están entre el borde viejo y el nuevo (o todas si no hay previo
+    # o si cambió la saturación, que recolorea el tramo visible).
+    y_viejo = anterior[0] if anterior else 0
+    desde = max(0, min(y_viejo, y_nivel))
+    hasta = min(alto, max(y_viejo, y_nivel))
+    if anterior is None or anterior[2] != saturado:
+        desde = min(desde, y_nivel)
+        hasta = alto
+    color_sat = C.COLOR_LED_SATURADO_GRIS if atenuado else C.MOD_CLIP
+    colores = dib["colores_gris"] if atenuado else dib["colores"]
+    for i in range(desde, hasta):
+        if i >= y_nivel:
+            canvas.itemconfig(filas[i], fill=color_sat if saturado else colores[i],
+                              state="normal")
+        else:
+            canvas.itemconfig(filas[i], state="hidden")
+    canvas.coords(dib["id_pico"], dib["x0"], dib["y0"] + y_pico, dib["x1"], dib["y0"] + y_pico)
+    canvas.itemconfig(dib["id_pico"], fill=C.MOD_PICO_GRIS if atenuado else C.MOD_PICO)
+    canvas.itemconfig(dib["id_clip"], state="normal" if saturado else "hidden")
+
+
 def apagar_medidores():
-    """Apaga todos los medidores (todos los LEDs al color de fondo) de
-    una sola vez. Se usa al entrar en modo super-optimizador; al salir,
-    el próximo cuadro VU los repinta completos (el estado se invalida
-    acá mismo)."""
+    """Apaga todos los medidores de una sola vez. Se usa al entrar en
+    modo super-optimizador; al salir, el próximo cuadro VU los repinta
+    completos (el estado se invalida acá)."""
     for widgets in list(E.fuentes.values()):
         try:
             canvas = widgets.get("vu_canvas")
-            segmentos = widgets.get("vu_segmentos") or []
             if canvas is None:
                 continue
+            dib = widgets.get("vu_obs")
+            if dib:
+                for iid in dib.get("id_filas") or []:
+                    canvas.itemconfig(iid, state="hidden")
+                canvas.coords(dib["id_pico"], dib["x0"], dib["y1"], dib["x1"], dib["y1"])
+                canvas.itemconfig(dib["id_clip"], state="hidden")
+                widgets.setdefault("vu_obs_estado", {}).pop("ultimo", None)
+                continue
+            segmentos = widgets.get("vu_segmentos") or []
             for seg in segmentos:
                 canvas.itemconfig(seg["id"], fill="#10161f")
             widgets.setdefault("vu_led_estado", {}).pop("ultimo", None)
@@ -275,6 +491,25 @@ def actualizar_vu_meters_ui():
             # el pintado se pausa y se invalida para repintar completo
             # al salir, sin saltos.
             widgets.setdefault("vu_led_estado", {}).pop("ultimo", None)
+            widgets.setdefault("vu_obs_estado", {}).pop("ultimo", None)
+            continue
+
+        if E.es_moderna():
+            # Pico con sostenido (estilo OBS): sube al instante, se queda
+            # 0.8s quieto y después cae.
+            pico = widgets.get("vu_pico_db", -60.0)
+            pico_t = widgets.get("vu_pico_t", 0.0)
+            if db_objetivo >= pico:
+                pico, pico_t = db_objetivo, ahora
+            elif ahora - pico_t > 0.8:
+                pico = max(db_objetivo, pico - E.CAIDA_POR_CUADRO)
+            widgets["vu_pico_db"] = pico
+            widgets["vu_pico_t"] = pico_t
+            _actualizar_barra_obs(
+                widgets["vu_canvas"], widgets.get("vu_obs"), db_visual, pico,
+                atenuado=atenuado, saturado=saturado,
+                estado=widgets.setdefault("vu_obs_estado", {})
+            )
             continue
 
         _actualizar_medidor_led(

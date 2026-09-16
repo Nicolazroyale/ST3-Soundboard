@@ -136,7 +136,7 @@ def _borde_normal_pad(indice):
     # de la etiqueta ya no se pinta acá afuera, sino en el marco de la
     # propia placa de vidrio (ver "color_marco" en _imagen_placa), así
     # no queda un cuadrado de color suelto alrededor del pad.
-    return C.COLOR_PANEL_SOUNDBOARD, 2
+    return E.color_fondo_panel(), 2
 
 
 def _restablecer_borde_pad(indice):
@@ -156,7 +156,8 @@ def _resaltar_destino_pad(indice_nuevo):
     if indice_nuevo is not None:
         celda = E._celdas_pads.get(indice_nuevo)
         if celda:
-            celda.config(highlightbackground="#2fd693", highlightthickness=3)
+            celda.config(highlightbackground=C.MOD_ACENTO if E.es_moderna() else "#2fd693",
+                         highlightthickness=3)
     E._arrastre_pad["destino_resaltado"] = indice_nuevo
 
 
@@ -546,6 +547,11 @@ def _reubicar_pads():
         celda = E._celdas_pads.get(i)
         if celda is None:
             continue
+        try:
+            if not celda.winfo_exists():
+                continue
+        except Exception:
+            continue
         celda.grid_forget()
         celda.grid(row=i // columnas, column=i % columnas, padx=6, pady=6)
     mod_ui_ventana.actualizar_scroll_soundboard()
@@ -567,7 +573,7 @@ def construir_soundboard():
     pie_celda = 76
     alto_celda = ancho_imagen_pad_base + pie_celda
 
-    marco_grid = tk.Frame(E.panel_soundboard, bg=C.COLOR_PANEL_SOUNDBOARD)
+    marco_grid = tk.Frame(E.panel_soundboard, bg=E.color_fondo_panel())
     marco_grid.pack(fill="x")
 
     E._celdas_pads.clear()
@@ -594,8 +600,8 @@ def construir_soundboard():
         # directamente sobre el marco metálico de la propia placa, más
         # abajo, vía "color_marco".
         celda = tk.Frame(
-            marco_grid, bg=C.COLOR_PANEL_SOUNDBOARD, width=ancho_celda, height=alto_celda,
-            highlightbackground=C.COLOR_PANEL_SOUNDBOARD, highlightthickness=2
+            marco_grid, bg=E.color_fondo_panel(), width=ancho_celda, height=alto_celda,
+            highlightbackground=E.color_fondo_panel(), highlightthickness=2
         )
         celda.grid(row=fila, column=col, padx=6, pady=6)
         celda.grid_propagate(False)
@@ -614,18 +620,20 @@ def construir_soundboard():
         alto_pad_principal = ancho_imagen_pad
         pad_canvas = tk.Canvas(
             celda, width=ancho_imagen_pad, height=alto_pad_principal,
-            bg=C.COLOR_PANEL_SOUNDBOARD, highlightthickness=0, cursor="hand2"
+            bg=E.color_fondo_panel(), highlightthickness=0, cursor="hand2"
         )
         pad_canvas.pack(pady=(8, 4))
 
         # Color de acento del pad: el que eligió el usuario si puso uno,
         # el verde de la consola si tiene sonido, y nada (gris de fábrica)
         # si está vacío.
-        acento_pad = color_etiqueta_pad or ("#2fd693" if tiene_sonido else None)
+        acento_pad = color_etiqueta_pad or ((C.MOD_ACENTO if E.es_moderna() else "#2fd693") if tiene_sonido else None)
 
         pad_esta_sonando = E._sesion_reproduccion.get("indice") == i
-        placa_normal = mod_ui_dibujo._placa_tk(ancho_imagen_pad, alto_pad_principal, acento_pad, tiene_sonido,
-                                  color_marco=color_etiqueta_pad, reproduciendo=pad_esta_sonando)
+        _hacer_placa = (mod_ui_dibujo._placa_moderna_tk if E.es_moderna()
+                        else mod_ui_dibujo._placa_tk)
+        placa_normal = _hacer_placa(ancho_imagen_pad, alto_pad_principal, acento_pad, tiene_sonido,
+                                    color_marco=color_etiqueta_pad, reproduciendo=pad_esta_sonando)
         if placa_normal is not None:
             pad_canvas.imagen_placa = placa_normal
             id_placa = pad_canvas.create_image(0, 0, anchor="nw", image=placa_normal)
@@ -633,9 +641,9 @@ def construir_soundboard():
             def _pintar_placa(canvas=pad_canvas, id_img=id_placa, w=ancho_imagen_pad,
                               h=alto_pad_principal, acento=acento_pad, enc=tiene_sonido,
                               hover=False, presionado=False, reproduciendo=False,
-                              color_marco=color_etiqueta_pad):
-                foto = mod_ui_dibujo._placa_tk(w, h, acento, enc, hover, presionado, color_marco=color_marco,
-                                  reproduciendo=reproduciendo)
+                              color_marco=color_etiqueta_pad, hacer=_hacer_placa):
+                foto = hacer(w, h, acento, enc, hover, presionado, color_marco=color_marco,
+                             reproduciendo=reproduciendo)
                 if foto is not None:
                     canvas.imagen_placa = foto
                     canvas.itemconfig(id_img, image=foto)
@@ -670,11 +678,20 @@ def construir_soundboard():
             pad_canvas.bind("<Leave>", lambda e, r=_refrescar_pad: r(hover=False))
 
         ruta_imagen = datos.get("imagen") if datos else None
-        # La imagen ocupa EXACTAMENTE la cara del pad (misma caja y mismo
-        # radio de esquina que dibuja _imagen_placa), así llega de punta a
-        # punta hasta el borde del foso sin quedar descentrada ni con las
-        # esquinas cortadas en un radio distinto al del pad.
-        caja_cara_img, radio_cara_img = _geometria_cara_placa(ancho_imagen_pad, alto_pad_principal)
+        # La imagen ocupa la cara del pad. En Moderna la cara es el
+        # interior del borde (plano); en Profesional la caja de la placa
+        # de vidrio.
+        if E.es_moderna():
+            _margen_cara = 10
+            caja_cara_img = (_margen_cara, _margen_cara,
+                             ancho_imagen_pad - _margen_cara, alto_pad_principal - _margen_cara)
+            radio_cara_img = 6
+        else:
+            # La imagen ocupa EXACTAMENTE la cara del pad (misma caja y mismo
+            # radio de esquina que dibuja _imagen_placa), así llega de punta a
+            # punta hasta el borde del foso sin quedar descentrada ni con las
+            # esquinas cortadas en un radio distinto al del pad.
+            caja_cara_img, radio_cara_img = _geometria_cara_placa(ancho_imagen_pad, alto_pad_principal)
         ancho_cara_img = max(1, round(caja_cara_img[2] - caja_cara_img[0]))
         alto_cara_img = max(1, round(caja_cara_img[3] - caja_cara_img[1]))
         miniatura = (
@@ -728,7 +745,7 @@ def construir_soundboard():
         etiqueta_nombre_pad = tk.Label(
             celda,
             text=nombre_mostrado,
-            bg=C.COLOR_PANEL_SOUNDBOARD,
+            bg=E.color_fondo_panel(),
             fg="white" if tiene_sonido else "#79859f",
             font=(E.FUENTE_UI, tam_nombre_pad, "bold"),
             wraplength=ancho_celda - 16,
@@ -742,7 +759,7 @@ def construir_soundboard():
         etiqueta_nombre_pad.bind("<ButtonRelease-1>", lambda e, idx=i: _soltar_arrastre_pad(idx, e))
         etiqueta_nombre_pad.bind("<Button-3>", lambda e, idx=i: _abrir_menu_contextual_pad(idx, e))
 
-        fila_botones = tk.Frame(celda, bg=C.COLOR_PANEL_SOUNDBOARD)
+        fila_botones = tk.Frame(celda, bg=E.color_fondo_panel())
         fila_botones.pack()
 
         boton_stop = mod_ui_dibujo._crear_boton_circular(
@@ -761,12 +778,15 @@ def construir_soundboard():
     # BOTÓN "DETECTAR SONIDOS": crea un pad por cada audio nuevo de la
     # carpeta Sondidos_pad (con su imagen gemela si existe).
     # ------------------------------------------------------------------
-    marco_detectar = tk.Frame(E.panel_soundboard, bg=C.COLOR_PANEL_SOUNDBOARD)
+    marco_detectar = tk.Frame(E.panel_soundboard, bg=E.color_fondo_panel())
     marco_detectar.pack(fill="x")
     boton_detectar = tk.Button(
         marco_detectar, text="🔍 DETECTAR SONIDOS DE LA CARPETA",
-        bg="#242d3d", fg="#4fe3ae", activebackground="#2e3a4f",
-        activeforeground="#4fe3ae", relief="flat", bd=0, pady=6,
+        bg="#242d3d" if not E.es_moderna() else "#232323",
+        fg="#4fe3ae" if not E.es_moderna() else C.MOD_ACENTO_CLARO,
+        activebackground="#2e3a4f" if not E.es_moderna() else "#2e2e2e",
+        activeforeground="#4fe3ae" if not E.es_moderna() else C.MOD_ACENTO_CLARO,
+        relief="flat", bd=0, pady=6,
         font=(E.FUENTE_UI, 9, "bold"), cursor="hand2",
         command=lambda: detectar_sonidos_carpeta(avisar=True),
     )
@@ -777,17 +797,17 @@ def construir_soundboard():
     # ------------------------------------------------------------------
     alto_barra_agregar = 76
 
-    marco_agregar = tk.Frame(E.panel_soundboard, bg=C.COLOR_PANEL_SOUNDBOARD)
+    marco_agregar = tk.Frame(E.panel_soundboard, bg=E.color_fondo_panel())
     marco_agregar.pack(fill="x")
 
     celda_mas = tk.Frame(
-        marco_agregar, bg=C.COLOR_PANEL_SOUNDBOARD, height=alto_barra_agregar,
+        marco_agregar, bg=E.color_fondo_panel(), height=alto_barra_agregar,
         highlightthickness=0, cursor="hand2"
     )
     celda_mas.pack(fill="x", padx=6, pady=(4, 10))
     celda_mas.pack_propagate(False)
 
-    canvas_mas = tk.Canvas(celda_mas, bg=C.COLOR_PANEL_SOUNDBOARD, highlightthickness=0, cursor="hand2")
+    canvas_mas = tk.Canvas(celda_mas, bg=E.color_fondo_panel(), highlightthickness=0, cursor="hand2")
     canvas_mas.pack(fill="both", expand=True)
 
     _estado_mas = {"hover": False, "ancho": 0, "alto": 0}
@@ -803,9 +823,12 @@ def construir_soundboard():
         # Misma placa que los pads: en reposo va sin color (gris
         # azulado, igual que un pad vacío) y sólo se tiñe de verde
         # cuando el mouse está encima, para que se lea como "acción".
-        placa = mod_ui_dibujo._placa_tk(
+        _hacer_mas = (mod_ui_dibujo._placa_moderna_tk if E.es_moderna()
+                      else mod_ui_dibujo._placa_tk)
+        _acento_mas = C.MOD_ACENTO if E.es_moderna() else "#2fd693"
+        placa = _hacer_mas(
             ancho_mas, alto_mas,
-            "#2fd693" if _estado_mas["hover"] else None,
+            _acento_mas if _estado_mas["hover"] else None,
             False, _estado_mas["hover"]
         )
         if placa is not None:
@@ -832,11 +855,13 @@ def construir_soundboard():
         x_mas = ancho_mas / 2 - (ancho_mas_txt + 18 + ancho_agregar_txt) / 2 + ancho_mas_txt / 2
         x_agregar = x_mas + ancho_mas_txt / 2 + 18 + ancho_agregar_txt / 2
         canvas_mas.create_text(
-            x_mas, alto_mas / 2, text="+", fill="#4fe3ae",
+            x_mas, alto_mas / 2, text="+",
+            fill=C.MOD_ACENTO_CLARO if E.es_moderna() else "#4fe3ae",
             font=(E.FUENTE_UI, tam_mas, "bold")
         )
         canvas_mas.create_text(
-            x_agregar, alto_mas / 2, text=texto_agregar, fill="#c3cee5",
+            x_agregar, alto_mas / 2, text=texto_agregar,
+            fill="#c3cee5" if not E.es_moderna() else "#d5d5d5",
             font=(E.FUENTE_UI, tam_agregar, "bold")
         )
 
